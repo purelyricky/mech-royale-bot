@@ -7,6 +7,7 @@ import json
 import math
 from pathlib import Path
 import sys
+import time
 
 
 def inside(x, y, ring):
@@ -35,6 +36,8 @@ class Arena:
         self.valid = False
         self.prisms = []
         self.buckets = {}
+        self.ring_rows = {}
+        self.edge_grids = []
         self.terrain = array('h')
         self.bounds = (-512., 555., -333., 388.)
         self.grid = bytearray()
@@ -64,6 +67,23 @@ class Arena:
                         ax, ay = bx, by
                 box = min(ring[::2]), max(ring[::2]), min(ring[1::2]), max(ring[1::2])
                 p = (raw['base'], raw['top'], rings, edges, box)
+                edge_grid = {}
+                for edge in edges:
+                    ax, ay, bx, by = edge
+                    for ey in range(math.floor(min(ay, by) / self.bucket), math.floor(max(ay, by) / self.bucket) + 1):
+                        for ex in range(math.floor(min(ax, bx) / self.bucket), math.floor(max(ax, bx) / self.bucket) + 1):
+                            edge_grid.setdefault((ex, ey), []).append(edge)
+                self.edge_grids.append(edge_grid)
+                for ring_points in rings:
+                    rows = {}
+                    ax, ay = ring_points[-2:]
+                    for i in range(0, len(ring_points), 2):
+                        bx, by = ring_points[i:i + 2]
+                        if ay != by:
+                            for row in range(math.floor(min(ay, by) / 8), math.floor(max(ay, by) / 8) + 1):
+                                rows.setdefault(row, []).append((ax, ay, bx, by))
+                        ax, ay = bx, by
+                    self.ring_rows[id(ring_points)] = rows
                 idx = len(self.prisms)
                 self.prisms.append(p)
                 for iy in range(math.floor(box[2] / self.bucket), math.floor(box[3] / self.bucket) + 1):
@@ -98,9 +118,17 @@ class Arena:
                 result.update(self.buckets.get((i, j), ()))
         return result
 
-    @staticmethod
-    def in_prism(x, y, rings):
-        return inside(x, y, rings[0]) and not any(inside(x, y, h) for h in rings[1:])
+    def in_prism(self, x, y, rings):
+        def contains(ring):
+            rows = getattr(self, 'ring_rows', {}).get(id(ring))
+            if rows is None:
+                return inside(x, y, ring)
+            hit = False
+            for ax, ay, bx, by in rows.get(math.floor(y / 8), ()):
+                if (ay > y) != (by > y) and x < (bx - ax) * (y - ay) / (by - ay) + ax:
+                    hit = not hit
+            return hit
+        return contains(rings[0]) and not any(contains(h) for h in rings[1:])
 
     def clear_at(self, x, y, z=None, radius=None, height=None):
         r = self.radius if radius is None else radius
@@ -115,8 +143,13 @@ class Arena:
                 continue
             if x < box[0] - r or x > box[1] + r or y < box[2] - r or y > box[3] + r:
                 continue
-            if self.in_prism(x, y, rings) or any(segment_dist2(x, y, *edge) < r * r for edge in edges):
+            if self.in_prism(x, y, rings):
                 return False
+            for ey in range(math.floor((y - r) / self.bucket), math.floor((y + r) / self.bucket) + 1):
+                for ex in range(math.floor((x - r) / self.bucket), math.floor((x + r) / self.bucket) + 1):
+                    for edge in self.edge_grids[idx].get((ex, ey), ()):
+                        if segment_dist2(x, y, *edge) < r * r:
+                            return False
         return True
 
     def walk_clear(self, a, b, radius=None, height=None):
@@ -223,9 +256,9 @@ class Arena:
     def grid_point(self, idx):
         return self.x0 + (idx % self.nx) * self.cell, self.y0 + (idx // self.nx) * self.cell
 
-    def nearest_open(self, point):
+    def nearest_open(self, point, reachable=False):
         idx = self.grid_index(point)
-        if self.grid[idx]:
+        if self.grid[idx] and (not reachable or self.walk_clear(point, self.grid_point(idx), self.radius - .5)):
             return idx
         i, j = idx % self.nx, idx // self.nx
         for radius in range(1, 18):
@@ -240,14 +273,17 @@ class Arena:
                         if self.grid[k]:
                             options.append(((self.grid_point(k)[0] - point[0]) ** 2 + (self.grid_point(k)[1] - point[1]) ** 2, k))
             if options:
-                return min(options)[1]
+                options.sort()
+                for _, candidate in options:
+                    if not reachable or self.walk_clear(point, self.grid_point(candidate), self.radius - .5):
+                        return candidate
         return idx
 
-    def path(self, start, goal, limit=2200):
+    def path(self, start, goal, limit=2200, deadline=math.inf):
         """A bounded A*: return the best partial path when a long search needs more time."""
         if not self.grid:
             return [tuple(goal[:2])]
-        s, g = self.nearest_open(start), self.nearest_open(goal)
+        s, g = self.nearest_open(start, reachable=True), self.nearest_open(goal)
         if not self.grid[s] or not self.grid[g]:
             return [tuple(goal[:2])]
         gx, gy = g % self.nx, g // self.nx
@@ -259,6 +295,8 @@ class Arena:
         best, best_h = s, heuristic(s)
         steps = 0
         while opened and steps < limit:
+            if steps % 32 == 0 and time.perf_counter() > deadline:
+                break
             _, cost, idx = heapq.heappop(opened)
             if cost > costs[idx] + .001:
                 continue

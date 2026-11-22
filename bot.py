@@ -181,6 +181,10 @@ class Bot:
             deadline = max(1., zone['shrink_end'] - now)
             excess = max(0., distance(point, zone['next_center']) - max(0., nr - 10))
             score += excess * .025 * min(3., (travel + 12) / deadline)
+            # Start a long evacuation before the shrinking boundary reaches us. Route length
+            # can substantially exceed straight-line distance on this building-dense map.
+            required_time = (d * 1.25 + excess * 1.6) / max(1., speed) + 12
+            score += max(0., required_time - deadline) ** 2 * .22
             score += self.risk(point, now) * (1.7 if me['hp'] < me['max_hp'] * .6 else 1.)
             score += d * .012 + reward
             ranked.append((score, point, kind, idx))
@@ -209,7 +213,7 @@ class Bot:
             self.route = []
             return self.goal
         if now >= self.route_until or self.route_goal is None or distance(self.route_goal, self.goal) > 12 or not self.route:
-            self.route = self.arena.path(pos, self.goal)
+            self.route = self.arena.path(pos, self.goal, deadline=self.deadline - .012)
             self.route_goal = self.goal
             self.route_until = now + 1.8
         # Skip only short, verified segments so grid corners cannot cut through buildings.
@@ -229,19 +233,25 @@ class Bot:
         radius = stats.get('radius', 2.5) + .25
         height = stats.get('height', 9.)
         wanted = unit(waypoint[0] - x, waypoint[1] - y)
-        directions = [wanted, self.previous_move, (0., 0.)]
-        directions += [(math.cos(k * math.tau / 24), math.sin(k * math.tau / 24)) for k in range(24)]
         current_dist = distance((x, y), waypoint)
+        arrival_speed = min(1., current_dist / max(1., speed * .85))
+        directions = [(wanted[0] * arrival_speed, wanted[1] * arrival_speed), self.previous_move, (0., 0.)]
+        directions += [(math.cos(k * math.tau / 24), math.sin(k * math.tau / 24)) for offset in range(3) for k in range(offset, 24, 3)]
         close = [e for e in self.threats if distance(e['pos'], (x, y)) < 130]
         ranked = []
         for ux, uy in directions:
+            if len(ranked) >= 7 and time.perf_counter() > self.deadline - .005:
+                break
             horizon = .85
             px = x + ux * speed * horizon + me['vel'][0] * .08
             py = y + uy * speed * horizon + me['vel'][1] * .08
             if not self.arena.walk_clear(me['pos'], (px, py), radius, height):
                 continue
             score = (distance((px, py), waypoint) - current_dist) * .14
-            score += self.zone_cost((px, py), obs, 1.8, min(7., obs['zone']['radius'] * .1)) * 2
+            cx, cy, safe_radius = future_circle(obs['zone'], now, now + 1.8)
+            # A route around a wall can initially lead away from the circle. A quadratic
+            # local zone cost would pin us against the wall while the zone kills us.
+            score += max(0., distance((px, py), (cx, cy)) - max(0., safe_radius - 5)) * .035
             score += self.risk((px, py), now) * (2 if me['hp'] < .6 * me['max_hp'] else 1.2)
             if close:
                 # Moving tangentially to a gun line frustrates leading and telegraphed lasers.
