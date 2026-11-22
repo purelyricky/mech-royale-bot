@@ -80,6 +80,9 @@ class Bot:
         self.jet_started = -100.
         self.jet_altitude = 0.
         self.jet_cooldown = 0.
+        self.scout_started = None
+        self.scout_altitude = 0.
+        self.scout_done = False
         self.ffa = False
         self.initial_players = self.config['match'].get('mechs', 16)
         self.own_kills = set()
@@ -597,6 +600,22 @@ class Bot:
         elif self.use_jets and not capturing and not me['grounded'] and now - self.jet_started < 5.5:
             action['boost'] = bool(now - self.jet_started < 1.7 and me['pos'][2] < self.jet_altitude and me['energy'] > 25)
         self.shooting(obs, action)
+        held_now = {w['kind'] for w in me['weapons'] if w}
+        hostile_near = any(e['kind'] == 'mech' and self.hostile_until.get(e['id'], -1) > now and distance(me['pos'], e['pos']) < 120 for e in self.threats)
+        known_weapon = any(p['kind'] in ('laser', 'lightning') and distance(me['pos'], p['pos']) < 70 for _,p in self.items['pickups'].values())
+        if not self.scout_done and self.scout_started is None and now < 3 and me['grounded'] and len(held_now) < 2 and me['hp'] > .9 * me['max_hp'] and me['energy'] > .8 * me['max_energy'] and not hostile_near and not known_weapon:
+            top = [*me['pos'][:2], me['pos'][2] + stats.get('height', 9.) + .5]
+            if self.arena.line_clear(top, [top[0], top[1], top[2] + 20.]):
+                self.scout_started, self.scout_altitude = now, me['pos'][2] + 18.
+                action.update(jump=True, boost=True)
+        elif self.scout_started is not None and not self.scout_done:
+            age = now - self.scout_started
+            if age > 4 or (age > .3 and me['grounded']):
+                self.scout_done = True
+            else:
+                action['boost'] = bool(age < 1.6 and me['pos'][2] < self.scout_altitude and me['energy'] > 35 and not hostile_near)
+                if not hostile_near and not any(action['fire']):
+                    action['aim'] = [self.scan_phase + now * 1.6, -.2]
         offer = obs.get('offer')
         if offer:
             priorities = {'nanites': 100, 'armor': 96, 'plating': 94, 'servos': 92, 'reactor': 84, 'jets': 80, 'laser_damage': 78, 'laser_charge': 76, 'gun_damage': 72, 'gun_rate': 70, 'gun_mag': 68, 'capacitor': 66, 'gun_velocity': 64, 'lightning_range': 62, 'lightning_efficiency': 60, 'sensors': 52, 'gyros': 48}

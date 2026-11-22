@@ -223,6 +223,33 @@ class Semantics(unittest.TestCase):
         self.assertFalse(partial)
         self.assertAlmostEqual(point[2], 18.4)
 
+    def test_early_scout_boosts_briefly_then_lands_without_repeating(self):
+        bot = Bot(HELLO)
+        bot.arena.walk_clear = lambda *args: True
+        bot.arena.line_clear = lambda *args: True
+        obs = copy.deepcopy(OBSERVATIONS[0])
+        me = obs['self']
+        me.update(pos=[0.,0.,0.], vel=[0.,0.,0.], grounded=True, in_zone=True, hp=me['max_hp'], energy=me['max_energy'])
+        me['weapons'][1] = None
+        obs.update(t=0., tick=0, mechs=[], cubes=[], crates=[], pickups=[], drops=[], projectiles=[], events=[], sounds=[])
+        obs['zone'].update(center=[0.,0.],next_center=[0.,0.],radius=300.,next_radius=300.)
+        bot.goal, bot.goal_until = (80.,0.), 100.
+        action = bot.act(obs)
+        self.assertTrue(action['jump'])
+        self.assertTrue(action['boost'])
+        obs.update(t=1., tick=20)
+        me.update(pos=[10.,0.,12.],vel=[11.,0.,10.],grounded=False)
+        self.assertTrue(bot.act(obs)['boost'])
+        obs.update(t=1.7,tick=34)
+        me['pos'][2] = 18.
+        self.assertFalse(bot.act(obs)['boost'])
+        obs.update(t=2.5,tick=50)
+        me.update(pos=[30.,0.,0.],vel=[11.,0.,0.],grounded=True)
+        self.assertFalse(bot.act(obs)['jump'])
+        obs.update(t=2.6,tick=52)
+        self.assertFalse(bot.act(obs)['jump'])
+        self.assertTrue(bot.scout_done)
+
     def test_mortar_launch_can_hit_a_body_and_never_fires_at_unsafe_close_range(self):
         bot = Bot(HELLO)
         bot.arena.line_clear = lambda *args: True
