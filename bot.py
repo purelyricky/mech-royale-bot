@@ -605,7 +605,7 @@ class Bot:
             action['pick'] = max(range(len(offer['choices'])), key=lambda i: priorities.get(offer['choices'][i]['id'], 20))
         held = {w['kind'] for w in me['weapons'] if w}
         reach = self.config['loot']['pickup_radius']
-        near = [p for p in obs['pickups'] if p['kind'] not in held and p['kind'] != 'mortar' and distance(me['pos'], p['pos']) < reach and abs(me['pos'][2] - p['pos'][2]) <= 4]
+        near = [p for p in obs['pickups'] if p['kind'] not in held and distance(me['pos'], p['pos']) < reach and abs(me['pos'][2] - p['pos'][2]) <= 4]
         if near:
             values = {'gun': 0, 'mortar': 1, 'lightning': 2, 'laser': 3}
             pickup = max(near, key=lambda p: values.get(p['kind'], 0))

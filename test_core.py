@@ -223,6 +223,34 @@ class Semantics(unittest.TestCase):
         self.assertFalse(partial)
         self.assertAlmostEqual(point[2], 18.4)
 
+    def test_mortar_launch_can_hit_a_body_and_never_fires_at_unsafe_close_range(self):
+        bot = Bot(HELLO)
+        bot.arena.line_clear = lambda *args: True
+        obs = copy.deepcopy(OBSERVATIONS[0])
+        me = obs['self']
+        me.update(pos=[0., 0., 0.], vel=[0., 0., 0.], aim=[0., 0.], hp=me['max_hp'])
+        ws = HELLO['config']['weapons']['mortar']
+        me['weapons'][1] = dict(kind='mortar', cooldown=0., stats=ws)
+        enemy = dict(id=100, kind='mech', pos=[80., 0., 0.], vel=[0., 0., 0.], aim=[math.pi, 0.], hp=1400., cubes=0, weapons=['gun'])
+        obs['mechs'] = [enemy]
+        bot.hostile_until[100] = obs['t'] + 3
+        action = {}
+        bot.shooting(obs, action)
+        me['aim'] = action['aim']
+        action = {}
+        bot.shooting(obs, action)
+        self.assertTrue(action['fire'][1])
+        pitch = action['aim'][1]
+        barrel = me['stats']['radius'] + .5
+        flight = (80. - barrel * math.cos(pitch)) / (ws['speed'] * math.cos(pitch))
+        impact_z = me['stats']['height'] + .5 + barrel*math.sin(pitch) + ws['speed']*math.sin(pitch)*flight - .5*ws['gravity']*flight*flight
+        self.assertGreater(impact_z, 0.)
+        self.assertLess(impact_z, HELLO['config']['mech']['height'])
+        enemy['pos'] = [8., 0., 0.]
+        action = {}
+        bot.shooting(obs, action)
+        self.assertFalse(action['fire'][1])
+
     def test_tall_mech_routes_around_bridge_that_small_mech_can_use(self):
         arena = object.__new__(Arena)
         arena.valid, arena.terrain, arena.ring_rows, arena.nav_cache = True, [], {}, {}
