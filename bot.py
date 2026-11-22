@@ -419,6 +419,13 @@ class Bot:
                 if not hostile and d > 46 and actor.get('hp', 1400) > 400:
                     continue
                 score = d * .5 + actor.get('hp', 1400) * .075 - (18 if actor['id'] == self.focus_id else 0)
+                aim_yaw = actor.get('aim', [0, 0])[0]
+                to_me = math.atan2(pos[1] - actor['pos'][1], pos[0] - actor['pos'][0])
+                if abs(angle_delta(aim_yaw, to_me)) > math.pi / 2:
+                    score -= 14  # rear hit: x1.5 damage
+                if laser_slot is not None and 'mortar' in (actor.get('weapons') or []):
+                    score -= 12  # laser cook-off bonus
+                score += 10 * sum(1 for o in obs['mechs'] if o['kind'] == 'mech' and o['id'] != actor['id'] and distance(o['pos'], actor['pos']) < 35)
             h = (self.config['npc']['height'] * .55 if actor['kind'] == 'npc' else 4.5 * (1 + .05 * actor.get('cubes', 0)))
             point = [actor['pos'][0], actor['pos'][1], actor['pos'][2] + h]
             if d < 280 and self.arena.line_clear(origin, point):
