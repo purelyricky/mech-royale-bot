@@ -388,10 +388,19 @@ class Bot:
             actor, point = target
             self.focus_id = actor['id']
             d = distance(pos, point)
-            # When a ready laser is present aim directly; otherwise lead with the arm gun.
+            # Lead the gun while the laser charges, then switch to hitscan aim for release.
             gun = next((w for w in weapons if w and w['kind'] == 'gun'), None)
             gun_point = intercept(origin, point, actor.get('vel', [0, 0, 0]), self.weapon_stats(gun)['speed']) if gun else point
-            aim_point = point if (laser_ready or charging) else gun_point
+            desired_charge = self.weapon_stats(laser)['charge'] if laser else 0.
+            if laser:
+                ls = self.weapon_stats(laser)
+                power = 1 + self.config['cubes'].get('damage_per_cube', .04) * min(me['cubes'], self.config['cubes'].get('stat_cap', 10))
+                multiplier = 1 + ls.get('cookoff', .6) if 'mortar' in actor.get('weapons', []) else 1.
+                damage = ls['damage'] * power * multiplier
+                fraction = (actor.get('hp', 1400) * 1.12 / max(1., damage) - ls.get('min_frac', .35)) / (1 - ls.get('min_frac', .35))
+                desired_charge = min(ls['charge'], max(ls.get('min_charge', .15), fraction * ls['charge']))
+            release_phase = bool(laser and laser_ready and laser.get('charge', 0) >= desired_charge - .1)
+            aim_point = point if release_phase else gun_point
             yaw = math.atan2(aim_point[1] - pos[1], aim_point[0] - pos[0])
             pitch = math.atan2(aim_point[2] - origin[2], distance(pos, aim_point))
             action['aim'] = [yaw, max(stats.get('min_pitch', -.7), min(stats.get('max_pitch', 1.3), pitch))]
@@ -414,7 +423,7 @@ class Bot:
                     if not fire[i] and w.get('ammo', 12) < ws['mag'] * .65 and not w.get('reload', 0):
                         action['reload'] = True
                 elif kind == 'laser':
-                    full = ws['charge']
+                    full = desired_charge
                     charge = w.get('charge', 0)
                     # The release fires immediately: hold while lining up, release at full charge.
                     fire[i] = bool(d < ws['range'] and not abstain and (charge < full - .035 or not aligned) and w.get('cooldown', 0) <= .05)

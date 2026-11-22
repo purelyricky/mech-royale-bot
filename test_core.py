@@ -77,6 +77,43 @@ class Semantics(unittest.TestCase):
         self.assertTrue(act['fire'][0])
         del self.bot.arena.line_clear
 
+    def test_laser_charges_while_gun_leads_then_releases_on_direct_aim(self):
+        bot = Bot(HELLO)
+        obs = copy.deepcopy(OBSERVATIONS[0])
+        p = obs['self']['pos']
+        enemy = dict(id=1, kind='mech', pos=[p[0] + 80, p[1], p[2]], vel=[0., 10., 0.], aim=[math.pi, 0.], hp=1400, cubes=0, weapons=['gun'])
+        obs['mechs'] = [enemy]
+        obs['self']['weapons'][1] = dict(kind='laser', cooldown=0., charge=.3, stats=HELLO['config']['weapons']['laser'])
+        bot.arena.line_clear = lambda a, b: True
+        origin, target = [p[0], p[1], p[2] + 7], [p[0] + 80, p[1], p[2] + 4.5]
+        lead = intercept(origin, target, enemy['vel'], 252.)
+        obs['self']['aim'] = [math.atan2(lead[1] - p[1], lead[0] - p[0]), math.atan2(lead[2] - origin[2], math.hypot(lead[0] - p[0], lead[1] - p[1]))]
+        act = {}
+        bot.shooting(obs, act)
+        self.assertTrue(all(act['fire']), 'gun shoots while laser charges')
+        self.assertAlmostEqual(act['aim'][0], obs['self']['aim'][0])
+        obs['self']['weapons'][1]['charge'] = .75
+        obs['self']['aim'] = [0., math.atan2(-2.5, 80)]
+        act = {}
+        bot.shooting(obs, act)
+        self.assertFalse(act['fire'][1], 'letting go releases laser')
+        self.assertAlmostEqual(act['aim'][0], 0.)
+
+    def test_loot_memory_expires_and_removes_missing_nearby_items(self):
+        bot = Bot(HELLO)
+        obs = copy.deepcopy(OBSERVATIONS[0])
+        p = obs['self']['pos']
+        item = dict(id=8001, kind='laser', pos=[p[0] + 100, p[1], p[2]])
+        obs['pickups'] = [item]
+        bot.remember(obs)
+        obs['t'], obs['pickups'] = 1., []
+        bot.remember(obs)
+        self.assertIn(8001, bot.items['pickups'])
+        obs['self']['pos'] = [p[0] + 95, p[1], p[2]]
+        bot.arena.line_clear = lambda a, b: True
+        bot.remember(obs)
+        self.assertNotIn(8001, bot.items['pickups'])
+
 
 def workload():
     bot = Bot(HELLO)
