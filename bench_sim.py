@@ -16,12 +16,19 @@ def main():
     ap.add_argument('--n', type=int, default=24)
     ap.add_argument('--seed', type=int, default=101)
     ap.add_argument('--jobs', type=int, default=3)
+    ap.add_argument('--against', help='optional paired control from the local registry')
+    ap.add_argument('--mode', choices=['practice', 'ffa'], default='practice')
     ap.add_argument('--kit', type=Path, default=Path('C:/Users/Window/Downloads/kit/x/mechfight-kit'))
     args = ap.parse_args()
     root = Path(__file__).resolve().parent
     env = dict(os.environ)
     env.update(CFG=str(root / 'ref/config_default.json'), KIT=str(args.kit.resolve()), OPP_REGISTRY=str(root / 'ref/opponents.json'))
-    cmd = ['node', 'sim/run.ts', 'practice', '--n', str(args.n), '--seed', str(args.seed), '--jobs', str(args.jobs), '--a', json.dumps(dict(ext=args.variant, label=args.variant), separators=(',', ':'))]
+    spec = dict(ext=args.variant)
+    if not args.against:
+        spec['label'] = args.variant
+    cmd = ['node', 'sim/run.ts', args.mode, '--n', str(args.n), '--seed', str(args.seed), '--jobs', str(args.jobs), '--a', json.dumps(spec, separators=(',', ':'))]
+    if args.against:
+        cmd += ['--b', json.dumps(dict(ext=args.against), separators=(',', ':'))]
     result = subprocess.run(cmd, cwd=root / 'ref/anthonyteti_buildathon-mech-royale', env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     print('\n'.join(result.stdout.splitlines()[-5:]))
     raise SystemExit(result.returncode)
