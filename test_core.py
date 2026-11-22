@@ -146,6 +146,44 @@ class Semantics(unittest.TestCase):
         self.assertFalse(act['jump'])
         self.assertFalse(act['boost'])
 
+    def test_ffa_detection_excludes_own_kills_and_needs_strong_evidence(self):
+        bot = Bot(HELLO)
+        obs = copy.deepcopy(OBSERVATIONS[0])
+        obs.update(t=50., alive=12, events=[dict(type='kill', target=i) for i in (1, 2, 4, 5)])
+        bot.remember(obs)
+        self.assertFalse(bot.ffa, 'our four kills do not identify an FFA')
+        obs.update(t=51., alive=9, events=[])
+        bot.remember(obs)
+        self.assertFalse(bot.ffa, 'three unrelated deaths remain ambiguous')
+        obs.update(t=52., alive=8)
+        bot.remember(obs)
+        self.assertTrue(bot.ffa, 'four unrelated early deaths identify an FFA')
+        obs.update(t=200., alive=8)
+        bot.remember(obs)
+        self.assertTrue(bot.ffa, 'mode remains stable once identified')
+
+    def test_ffa_detection_ignores_late_zone_culls(self):
+        bot = Bot(HELLO)
+        obs = copy.deepcopy(OBSERVATIONS[0])
+        obs.update(t=220., alive=6, events=[])
+        bot.remember(obs)
+        self.assertFalse(bot.ffa)
+
+    def test_ffa_can_fire_at_a_visible_unconfirmed_opponent(self):
+        bot = Bot(HELLO)
+        obs = copy.deepcopy(OBSERVATIONS[0])
+        obs['self']['pos'] = [0., 0., 0.]
+        obs['self']['aim'] = [0., math.atan2(-2.5, 80)]
+        obs['mechs'] = [dict(id=1, kind='mech', pos=[80., 0., 0.], vel=[0., 0., 0.], aim=[0., 0.], hp=1400., cubes=0, weapons=['gun'])]
+        bot.arena.line_clear = lambda *args: True
+        before = {}
+        bot.shooting(obs, before)
+        self.assertFalse(before['fire'][0])
+        bot.ffa = True
+        after = {}
+        bot.shooting(obs, after)
+        self.assertTrue(after['fire'][0])
+
 
 def workload():
     bot = Bot(HELLO)

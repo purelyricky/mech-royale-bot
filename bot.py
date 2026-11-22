@@ -79,6 +79,9 @@ class Bot:
         self.jet_started = -100.
         self.jet_altitude = 0.
         self.jet_cooldown = 0.
+        self.ffa = False
+        self.initial_players = self.config['match'].get('mechs', 16)
+        self.own_kills = set()
         self.orbit = self.rng.choice((-1, 1))
         self.scan_phase = self.rng.uniform(-math.pi, math.pi)
         self.deadline = math.inf
@@ -135,6 +138,14 @@ class Bot:
                 self.last_combat = now
             elif event['type'] == 'kill':
                 self.memory.pop(event['target'], None)
+                self.own_kills.add(event['target'])
+        foreign_deaths = max(0, self.initial_players - obs['alive'] - len(self.own_kills))
+        if (now < 100 and foreign_deaths >= 4) or (now < 180 and foreign_deaths >= 6):
+            self.ffa = True
+        if self.ffa:
+            for enemy in self.threats:
+                if enemy['kind'] == 'mech' and self.hostile_until.get(enemy['id'], -1) < now and distance(enemy['pos'], own_pos) > 55:
+                    enemy['weight'] /= .65
 
     def risk(self, point, now, cover=False, z=None):
         total = 0.
@@ -196,7 +207,7 @@ class Bot:
                 candidates.append(((zone['next_center'][0] + .65 * nr * math.cos(yaw), zone['next_center'][1] + .65 * nr * math.sin(yaw)), 'zone', None, 0.))
         nearest = distance(pos, self.threats[0]['pos']) if self.threats else 1e6
         peaceful = nearest > 90 and now - self.last_damage > 2
-        hunter_near = any(e['kind'] == 'mech' and (distance(pos, e['pos']) < 60 or (self.hostile_until.get(e['id'], -1) > now and distance(pos, e['pos']) < 110)) for e in self.threats)
+        hunter_near = any(e['kind'] == 'mech' and (distance(pos, e['pos']) < (140 if self.ffa else 60) or (self.hostile_until.get(e['id'], -1) > now and distance(pos, e['pos']) < 110)) for e in self.threats)
         roof = me['grounded'] and pos[2] > self.arena.ground(*pos[:2]) + 3
         def reachable_item(item):
             return abs(item['pos'][2] - self.arena.ground(*item['pos'][:2])) < 4 or (roof and abs(item['pos'][2] - pos[2]) < 4)
@@ -209,6 +220,8 @@ class Bot:
                     continue
                 npc = enemy['kind'] == 'npc'
                 if not npc and enemy.get('hp', 1400) > 450:
+                    continue
+                if self.ffa and obs['alive'] > 6 and not npc and enemy.get('hp', 1400) > 250:
                     continue
                 if npc and (not peaceful or d > 100):
                     continue
@@ -410,13 +423,13 @@ class Bot:
                 break
             d = distance(pos, actor['pos'])
             if actor['kind'] == 'npc':
-                danger = any(e['kind'] == 'mech' and (distance(pos, e['pos']) < 60 or (self.hostile_until.get(e['id'], -1) > now and distance(pos, e['pos']) < 110)) for e in self.threats)
+                danger = any(e['kind'] == 'mech' and (distance(pos, e['pos']) < (150 if self.ffa else 60) or (self.hostile_until.get(e['id'], -1) > now and distance(pos, e['pos']) < 110)) for e in self.threats)
                 if d > 95 or me['hp'] < .75 * me['max_hp'] or danger:
                     continue
                 score = d * .5 + 30 if self.goal_kind == 'farm' and actor['id'] == self.goal_id else d + 65
             else:
                 hostile = self.hostile_until.get(actor['id'], -1) > now
-                if not hostile and d > 46 and actor.get('hp', 1400) > 400:
+                if not self.ffa and not hostile and d > 46 and actor.get('hp', 1400) > 400:
                     continue
                 score = d * .5 + actor.get('hp', 1400) * .075 - (18 if actor['id'] == self.focus_id else 0)
             h = (self.config['npc']['height'] * .55 if actor['kind'] == 'npc' else 4.5 * (1 + .05 * actor.get('cubes', 0)))
@@ -462,6 +475,8 @@ class Bot:
             aligned = yaw_error < tolerance + .025 and pitch_error < max(.03, tolerance)
             # At low HP, distant chip damage prevents our own regeneration and gives away cover.
             abstain = me['hp'] < .55 * me['max_hp'] and d > 110 and actor.get('hp', 1400) > 350
+            if self.ffa and me['hp'] < .7 * me['max_hp'] and d > 100 and actor.get('hp', 1400) > 350:
+                abstain = True
             for i, w in enumerate(weapons):
                 if not w:
                     continue
@@ -567,7 +582,7 @@ class Bot:
                 if values.get(pickup['kind'], 0) > values.get(weapon['kind'], 0) and not weapon.get('charge', 0):
                     action.update(take=pickup['id'], drop=old)
         mf.draw.point([waypoint[0], waypoint[1], self.arena.ground(*waypoint)], '#4cf', 4)
-        mf.draw.label(f'{self.goal_kind} hp {me["hp"]:.0f}')
+        mf.draw.label(f'{"FFA " if self.ffa else ""}{self.goal_kind} hp {me["hp"]:.0f}')
         return action
 
 
