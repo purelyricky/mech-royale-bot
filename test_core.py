@@ -223,6 +223,25 @@ class Semantics(unittest.TestCase):
         self.assertFalse(partial)
         self.assertAlmostEqual(point[2], 18.4)
 
+    def test_nearby_kill_drops_are_urgent_but_a_guarded_corpse_is_not(self):
+        obs = copy.deepcopy(OBSERVATIONS[0])
+        obs['self']['pos'] = [0., 0., 0.]
+        obs['self']['hp'] = obs['self']['max_hp']
+        obs['zone'].update(center=[0., 0.], next_center=[0., 0.], radius=300., next_radius=300.)
+        obs.update(cubes=[dict(id=201, pos=[5., 0., 0.]), dict(id=202, pos=[36., 0., 0.])], pickups=[], crates=[], drops=[], mechs=[], events=[dict(type='kill', target=100)])
+        for guarded in (False, True):
+            bot = Bot(HELLO)
+            bot.arena.clear_at = lambda *args, **kwargs: True
+            bot.arena.line_clear = lambda *args: True
+            bot.arena.ground = lambda *args: 0.
+            corpse = dict(id=100, kind='mech', pos=[36., 0., 0.], vel=[0., 0., 0.], aim=[math.pi, 0.], hp=1400., cubes=0, weapons=['gun'])
+            bot.memory[100] = (obs['t']-.1, corpse)
+            obs['mechs'] = [dict(corpse, id=101, pos=[41., 0., 0.])] if guarded else []
+            bot.remember(obs)
+            self.assertNotIn(100, [e['id'] for e in bot.threats])
+            bot.select_goal(obs)
+            self.assertEqual(bot.goal_id, 201 if guarded else 202)
+
     def test_tall_mech_routes_around_bridge_that_small_mech_can_use(self):
         arena = object.__new__(Arena)
         arena.valid, arena.terrain, arena.ring_rows, arena.nav_cache = True, [], {}, {}

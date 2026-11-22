@@ -83,6 +83,7 @@ class Bot:
         self.ffa = False
         self.initial_players = self.config['match'].get('mechs', 16)
         self.own_kills = set()
+        self.kill_loot = []
         self.orbit = self.rng.choice((-1, 1))
         self.scan_phase = self.rng.uniform(-math.pi, math.pi)
         self.deadline = math.inf
@@ -138,8 +139,15 @@ class Bot:
             elif event['type'] == 'hit':
                 self.last_combat = now
             elif event['type'] == 'kill':
-                self.memory.pop(event['target'], None)
+                corpse = self.memory.pop(event['target'], None)
+                if corpse and now - corpse[0] < 3 and distance(corpse[1]['pos'], own_pos) < 40:
+                    self.kill_loot.append((now + 6, corpse[1]['pos']))
+                    self.goal_until = -1.
+                self.threats = [e for e in self.threats if e['id'] != event['target']]
                 self.own_kills.add(event['target'])
+        self.kill_loot = [(until, point) for until, point in self.kill_loot if until > now]
+        if self.kill_loot:
+            self.goal_until = min(self.goal_until, now + .25)
         foreign_deaths = max(0, self.initial_players - obs['alive'] - len(self.own_kills))
         if (now < 100 and foreign_deaths >= 4) or (now < 180 and foreign_deaths >= 6):
             self.ffa = True
@@ -237,12 +245,17 @@ class Bot:
                 candidates.append((point, 'engage', enemy['id'], reward))
         # Resources are deliberately local; crossing the map to chase a cube is rarely safe.
         cube_items = [item for _, item in self.items['cubes'].values()]
+        current_risk = self.risk(pos, now)
+        def fresh_kill_loot(item):
+            return self.kill_loot and distance(pos, item['pos']) < 40 and any(distance(point, item['pos']) < 12 for _, point in self.kill_loot) and self.risk(item['pos'], now) <= current_risk + 2
         for cube in cube_items:
             d = distance(pos, cube['pos'])
             if d < 110 and reachable_item(cube):
                 count = sum(1 for other in cube_items if distance(cube['pos'], other['pos']) < 8 and abs(cube['pos'][2] - other['pos'][2]) < 4)
                 useful = min(count, max(0, 10 - me['cubes']))
                 value = min(22., 5. + useful * 3.) if useful else 1.
+                if useful and fresh_kill_loot(cube):
+                    value += 16.
                 candidates.append((cube['pos'][:2], 'cube', cube['id'], -value / (1 + d / 90)))
         held = {w['kind'] for w in me['weapons'] if w}
         for _, pickup in self.items['pickups'].values():
@@ -251,6 +264,8 @@ class Bot:
                 value = {'laser': 12., 'lightning': 4., 'mortar': 0., 'gun': 0.}.get(pickup['kind'], 0)
                 if len(held) >= 2:
                     value = max(0., value - 4)
+                if value and fresh_kill_loot(pickup):
+                    value += 12.
                 if value:
                     candidates.append((pickup['pos'][:2], 'weapon', pickup['id'], -value / (1 + d / 100)))
         if not hunter_near and me['hp'] > me['max_hp'] * .75 and me['cubes'] < 10:
