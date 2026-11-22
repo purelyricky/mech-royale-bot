@@ -58,6 +58,7 @@ class Bot:
         self.arena = Arena(hello['map']['dir'], self.config['mech'])
         self.goal = None
         self.goal_kind = 'zone'
+        self.sound_hist = []
         self.goal_id = None
         self.goal_until = -1.
         self.route = []
@@ -198,6 +199,12 @@ class Bot:
                 explore = now < 65 and r == 35 and me['hp'] > me['max_hp'] * .85 and not any(self.hostile_until.get(e['id'], -1) > now for e in self.threats if e['kind'] == 'mech')
                 fresh = now - self.visited.get((round(point[0] / 25), round(point[1] / 25)), -100) > 35
                 candidates.append((point, 'explore' if explore else 'zone', None, -1.8 if explore and fresh else 0.))
+        if now < 75 and me['hp'] > me['max_hp'] * .85 and self.sound_hist and not self.ffa:
+            bx = sum(math.cos(h[1]) for h in self.sound_hist)
+            by = sum(math.sin(h[1]) for h in self.sound_hist)
+            if math.hypot(bx, by) > .3 * len(self.sound_hist):
+                yaw = math.atan2(by, bx)
+                candidates.append(((pos[0] + 70 * math.cos(yaw), pos[1] + 70 * math.sin(yaw)), 'seek', None, -4.5))
         cx, cy, cr = future_circle(zone, now, now + 18)
         candidates.append(((cx, cy), 'zone', None, 0.))
         nr = zone['next_radius']
@@ -571,6 +578,10 @@ class Bot:
         self.deadline = time.perf_counter() + .027
         me, now = obs['self'], obs['t']
         self.remember(obs)
+        for snd in obs.get('sounds', []):
+            if snd['kind'] in ('gun', 'laser', 'lightning', 'mortar', 'explosion'):
+                self.sound_hist.append((now - snd.get('age', 0), snd['bearing'], snd['dist']))
+        self.sound_hist = [h for h in self.sound_hist if now - h[0] < 6]
         if self.goal is None or now >= self.goal_until:
             self.select_goal(obs)
         waypoint = self.waypoint(obs)
