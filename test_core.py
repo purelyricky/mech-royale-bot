@@ -116,6 +116,36 @@ class Semantics(unittest.TestCase):
         bot.remember(obs)
         self.assertNotIn(8001, bot.items['pickups'])
 
+    def test_cube_cluster_can_outweigh_a_single_nearby_cube(self):
+        bot = Bot(HELLO)
+        obs = copy.deepcopy(OBSERVATIONS[0])
+        obs['self']['pos'] = [0., 0., 0.]
+        obs['self']['weapons'][1] = dict(kind='laser', cooldown=0., charge=0., stats=HELLO['config']['weapons']['laser'])
+        obs['cubes'] = [dict(id=5000, pos=[10., 0., 0.])] + [dict(id=5001 + i, pos=[30. + i * .2, 0., 0.]) for i in range(5)]
+        bot.arena.ground = lambda *args: 0.
+        bot.arena.clear_at = lambda *args: True
+        bot.remember(obs)
+        bot.select_goal(obs)
+        self.assertEqual(bot.goal_kind, 'cube')
+        self.assertGreaterEqual(bot.goal_id, 5001)
+
+    def test_supply_capture_holds_position_and_suppresses_hop(self):
+        bot = Bot(HELLO)
+        bot.use_jets = True
+        obs = copy.deepcopy(OBSERVATIONS[0])
+        obs['self']['pos'] = [0., 0., 0.]
+        obs['drops'] = [dict(id=20000, pos=[0., 0., 0.], radius=8., lands_in=0., capture_s=4., progress=3., holder=obs['self']['id'])]
+        obs['mechs'] = [dict(id=1, kind='mech', pos=[100., 0., 0.], vel=[0., 0., 0.], aim=[math.pi, 0.], hp=1400., cubes=0, weapons=['gun'])]
+        bot.hostile_until[1] = 10.
+        bot.arena.ground = lambda *args: 0.
+        bot.arena.clear_at = lambda *args: True
+        bot.arena.walk_clear = lambda *args: True
+        bot.arena.line_clear = lambda *args: True
+        act = bot.act(obs)
+        self.assertEqual(act['move'], [0., 0.])
+        self.assertFalse(act['jump'])
+        self.assertFalse(act['boost'])
+
 
 def workload():
     bot = Bot(HELLO)
@@ -132,6 +162,14 @@ def workload():
     for k in range(24):
         yaw = k * math.tau / 24
         obs['projectiles'].append(dict(id=k, kind='gun', pos=[30 * math.cos(yaw), 30 * math.sin(yaw), 5.], vel=[-252 * math.cos(yaw), -252 * math.sin(yaw), 0.]))
+    for k in range(80):
+        yaw = k * math.tau / 80
+        x, y = 42 * math.cos(yaw), 42 * math.sin(yaw)
+        obs['cubes'].append(dict(id=5000 + k, pos=[x, y, bot.arena.ground(x, y)]))
+    for k in range(24):
+        yaw = k * math.tau / 24
+        x, y = 55 * math.cos(yaw), 55 * math.sin(yaw)
+        obs['pickups'].append(dict(id=8000 + k, kind='laser' if k % 2 else 'lightning', pos=[x, y, bot.arena.ground(x, y)]))
     times = []
     for k in range(200):
         obs['t'], obs['tick'] = k * .1, k * 2
