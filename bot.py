@@ -597,7 +597,7 @@ class Bot:
         self.shooting(obs, action)
         offer = obs.get('offer')
         if offer:
-            priorities = {'nanites': 100, 'armor': 96, 'plating': 94, 'servos': 92, 'reactor': 84, 'jets': 80, 'laser_damage': 78, 'laser_charge': 76, 'gun_damage': 72, 'gun_rate': 70, 'gun_mag': 68, 'capacitor': 66, 'gun_velocity': 64, 'lightning_range': 62, 'lightning_efficiency': 60, 'sensors': 52, 'gyros': 48}
+            priorities = {'nanites': 100, 'armor': 96, 'plating': 102, 'servos': 92, 'reactor': 84, 'jets': 80, 'laser_damage': 78, 'laser_charge': 76, 'gun_damage': 72, 'gun_rate': 70, 'gun_mag': 68, 'capacitor': 66, 'gun_velocity': 64, 'lightning_range': 62, 'lightning_efficiency': 60, 'sensors': 52, 'gyros': 48}
             if me['cubes'] < 6:
                 priorities.update(laser_damage=118, gun_damage=114, laser_charge=112, gun_rate=110, gun_mag=108, servos=104)
             action['pick'] = max(range(len(offer['choices'])), key=lambda i: priorities.get(offer['choices'][i]['id'], 20))
