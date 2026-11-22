@@ -455,7 +455,7 @@ class Bot:
                 score = d * .5 + 30 if self.goal_kind == 'farm' and actor['id'] == self.goal_id else d + 65
             else:
                 hostile = self.hostile_until.get(actor['id'], -1) > now
-                if not self.ffa and not hostile and d > 46 and actor.get('hp', 1400) > 400:
+                if not self.ffa and not hostile and d > 170:
                     continue
                 score = d * .5 + actor.get('hp', 1400) * .075 - (18 if actor['id'] == self.focus_id else 0)
                 aim_yaw = actor.get('aim', [0, 0])[0]
