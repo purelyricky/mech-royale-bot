@@ -488,7 +488,11 @@ class Bot:
             d = distance(pos, point)
             # Lead the gun while the laser charges, then switch to hitscan aim for release.
             gun = next((w for w in weapons if w and w['kind'] == 'gun'), None)
-            gun_point = intercept(origin, point, actor.get('vel', [0, 0, 0]), self.weapon_stats(gun)['speed']) if gun else point
+            delay = 1. / self.config['match']['tick_hz']
+            velocity = actor.get('vel', [0, 0, 0])
+            gun_origin = [origin[j] + me['vel'][j] * delay for j in range(3)]
+            gun_target = [point[j] + velocity[j] * delay for j in range(3)]
+            gun_point = intercept(gun_origin, gun_target, velocity, self.weapon_stats(gun)['speed']) if gun else point
             desired_charge = self.weapon_stats(laser)['charge'] if laser else 0.
             if laser:
                 ls = self.weapon_stats(laser)
@@ -499,8 +503,9 @@ class Bot:
                 desired_charge = min(ls['charge'], max(ls.get('min_charge', .15), fraction * ls['charge']))
             release_phase = bool(laser and laser_ready and laser.get('charge', 0) >= desired_charge - .1)
             aim_point = point if release_phase else gun_point
-            yaw = math.atan2(aim_point[1] - pos[1], aim_point[0] - pos[0])
-            pitch = math.atan2(aim_point[2] - origin[2], distance(pos, aim_point))
+            aim_origin = origin if release_phase else gun_origin
+            yaw = math.atan2(aim_point[1] - aim_origin[1], aim_point[0] - aim_origin[0])
+            pitch = math.atan2(aim_point[2] - aim_origin[2], distance(aim_origin, aim_point))
             action['aim'] = [yaw, max(stats.get('min_pitch', -.7), min(stats.get('max_pitch', 1.3), pitch))]
             yaw_error = abs(angle_delta(me['aim'][0], yaw))
             pitch_error = abs(me['aim'][1] - pitch)
@@ -516,8 +521,8 @@ class Bot:
                     continue
                 ws, kind = self.weapon_stats(w), w['kind']
                 if kind == 'gun':
-                    gun_yaw = math.atan2(gun_point[1] - pos[1], gun_point[0] - pos[0])
-                    gun_pitch = math.atan2(gun_point[2] - origin[2], distance(pos, gun_point))
+                    gun_yaw = math.atan2(gun_point[1] - gun_origin[1], gun_point[0] - gun_origin[0])
+                    gun_pitch = math.atan2(gun_point[2] - gun_origin[2], distance(gun_origin, gun_point))
                     gun_aligned = abs(angle_delta(me['aim'][0], gun_yaw)) < tolerance + .025 and abs(me['aim'][1] - gun_pitch) < max(.03, tolerance)
                     fire[i] = bool(gun_aligned and d < ws['range'] - 3 and not abstain)
                     if not fire[i] and w.get('ammo', 12) < ws['mag'] * .65 and not w.get('reload', 0):

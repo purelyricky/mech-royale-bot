@@ -89,8 +89,11 @@ class Semantics(unittest.TestCase):
         bot.arena.line_clear = lambda a, b: True
         bot.hostile_until[1] = 10.
         origin, target = [p[0], p[1], p[2] + 7], [p[0] + 80, p[1], p[2] + 4.5]
-        lead = intercept(origin, target, enemy['vel'], 252.)
-        obs['self']['aim'] = [math.atan2(lead[1] - p[1], lead[0] - p[0]), math.atan2(lead[2] - origin[2], math.hypot(lead[0] - p[0], lead[1] - p[1]))]
+        delay = 1. / HELLO['config']['match']['tick_hz']
+        future_origin = [origin[j] + obs['self']['vel'][j] * delay for j in range(3)]
+        future_target = [target[j] + enemy['vel'][j] * delay for j in range(3)]
+        lead = intercept(future_origin, future_target, enemy['vel'], 252.)
+        obs['self']['aim'] = [math.atan2(lead[1] - future_origin[1], lead[0] - future_origin[0]), math.atan2(lead[2] - future_origin[2], math.hypot(lead[0] - future_origin[0], lead[1] - future_origin[1]))]
         act = {}
         bot.shooting(obs, act)
         self.assertTrue(all(act['fire']), 'gun shoots while laser charges')
@@ -222,6 +225,30 @@ class Semantics(unittest.TestCase):
         point, partial = bot.visible_aim_point(actor, [0., 0., 7.])
         self.assertFalse(partial)
         self.assertAlmostEqual(point[2], 18.4)
+
+    def test_gun_command_intercepts_after_both_actors_move_one_tick(self):
+        bot = Bot(HELLO)
+        bot.arena.line_clear = lambda *args: True
+        obs = copy.deepcopy(OBSERVATIONS[0])
+        me = obs['self']
+        me.update(pos=[0., 0., 0.], vel=[0., -8., 0.], hp=me['max_hp'])
+        me['weapons'][1] = None
+        enemy = dict(id=100, kind='mech', pos=[80., 0., 0.], vel=[0., 10., 0.], aim=[math.pi, 0.], hp=1400., cubes=0, weapons=['gun'])
+        obs['mechs'] = [enemy]
+        bot.hostile_until[100] = obs['t'] + 3
+        action = {}
+        bot.shooting(obs, action)
+        yaw, pitch = action['aim']
+        speed = bot.weapon_stats(me['weapons'][0])['speed']
+        bullet = [speed * math.cos(pitch) * math.cos(yaw), speed * math.cos(pitch) * math.sin(yaw), speed * math.sin(pitch)]
+        delay = 1. / HELLO['config']['match']['tick_hz']
+        origin = [0., -8. * delay, me['stats']['muzzle_height']]
+        target = [80., 10. * delay, HELLO['config']['mech']['height'] * .5]
+        rel_v = [bullet[j] - enemy['vel'][j] for j in range(3)]
+        rel_p = [target[j] - origin[j] for j in range(3)]
+        flight = sum(a*b for a,b in zip(rel_p,rel_v)) / sum(v*v for v in rel_v)
+        miss = math.sqrt(sum((rel_p[j] - rel_v[j]*flight)**2 for j in range(3)))
+        self.assertLess(miss, .01)
 
     def test_tall_mech_routes_around_bridge_that_small_mech_can_use(self):
         arena = object.__new__(Arena)
