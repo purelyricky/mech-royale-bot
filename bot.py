@@ -71,14 +71,29 @@ class Bot:
         self.memory = {}
         self.items = {'pickups': {}, 'cubes': {}, 'crates': {}}
         self.focus_id = None
+        self.hostile_until = {}
+        self.aim_streak = {}
+        self.last_obs_t = -.1
+        self.visited = {}
         self.orbit = self.rng.choice((-1, 1))
         self.scan_phase = self.rng.uniform(-math.pi, math.pi)
         self.deadline = math.inf
 
     def remember(self, obs):
         now = obs['t']
+        dt = min(.2, max(0., now - self.last_obs_t))
+        self.last_obs_t = now
+        own_pos = obs['self']['pos']
+        self.visited[(round(own_pos[0] / 25), round(own_pos[1] / 25))] = now
         for actor in obs['mechs']:
             self.memory[actor['id']] = (now, actor)
+            if actor['kind'] == 'mech':
+                toward = math.atan2(own_pos[1] - actor['pos'][1], own_pos[0] - actor['pos'][0])
+                aimed = abs(angle_delta(actor['aim'][0], toward)) < .3
+                streak = self.aim_streak.get(actor['id'], 0.)
+                self.aim_streak[actor['id']] = min(1., streak + dt) if aimed else 0.
+                if self.aim_streak[actor['id']] >= .25 or (aimed and actor.get('charging')):
+                    self.hostile_until[actor['id']] = now + 3
         self.threats = []
         for idx, (seen, actor) in list(self.memory.items()):
             age = now - seen
@@ -87,6 +102,8 @@ class Bot:
                 continue
             copy = dict(actor)
             copy['weight'] = (1. if actor['kind'] == 'mech' else .23) * max(.2, 1 - age / 10)
+            if actor['kind'] == 'mech' and self.hostile_until.get(actor['id'], -1) < now and distance(actor['pos'], own_pos) > 55:
+                copy['weight'] *= .65
             # The server tracks real positions for five seconds; only extrapolate our own old memory.
             copy['pos'] = [actor['pos'][i] + actor['vel'][i] * min(age, .7) for i in range(3)]
             self.threats.append(copy)
@@ -108,6 +125,8 @@ class Bot:
             if event['type'] == 'damaged':
                 self.last_damage = now
                 self.last_combat = now
+                if event.get('by') is not None:
+                    self.hostile_until[event['by']] = now + 12
             elif event['type'] == 'hit':
                 self.last_combat = now
             elif event['type'] == 'kill':
@@ -148,12 +167,16 @@ class Bot:
         speed = me['stats'].get('walk_speed', 11.7)
         candidates = [(pos[:2], 'zone', None, 0.)]
         if self.goal is not None:
-            candidates.append((self.goal, self.goal_kind, self.goal_id, -.35))
+            reward = -2.4 if self.goal_kind == 'explore' and distance(pos, self.goal) > 8 else -.35
+            candidates.append((self.goal, self.goal_kind, self.goal_id, reward))
         # Local alternatives preserve freedom rather than driving every spawn to the center.
         for r in (35., 80.):
             for k in range(12):
                 yaw = self.scan_phase + k * math.tau / 12
-                candidates.append(((pos[0] + r * math.cos(yaw), pos[1] + r * math.sin(yaw)), 'zone', None, 0.))
+                point = pos[0] + r * math.cos(yaw), pos[1] + r * math.sin(yaw)
+                explore = now < 65 and r == 35 and me['hp'] > me['max_hp'] * .85 and not any(self.hostile_until.get(e['id'], -1) > now for e in self.threats if e['kind'] == 'mech')
+                fresh = now - self.visited.get((round(point[0] / 25), round(point[1] / 25)), -100) > 35
+                candidates.append((point, 'explore' if explore else 'zone', None, -1.8 if explore and fresh else 0.))
         cx, cy, cr = future_circle(zone, now, now + 18)
         candidates.append(((cx, cy), 'zone', None, 0.))
         nr = zone['next_radius']
@@ -367,6 +390,9 @@ class Bot:
                     continue
                 score = d + 65
             else:
+                hostile = self.hostile_until.get(actor['id'], -1) > now
+                if not hostile and d > 46 and actor.get('hp', 1400) > 400:
+                    continue
                 score = d * .5 + actor.get('hp', 1400) * .075 - (18 if actor['id'] == self.focus_id else 0)
             h = (self.config['npc']['height'] * .55 if actor['kind'] == 'npc' else 4.5 * (1 + .05 * actor.get('cubes', 0)))
             point = [actor['pos'][0], actor['pos'][1], actor['pos'][2] + h]

@@ -85,6 +85,7 @@ class Semantics(unittest.TestCase):
         obs['mechs'] = [enemy]
         obs['self']['weapons'][1] = dict(kind='laser', cooldown=0., charge=.3, stats=HELLO['config']['weapons']['laser'])
         bot.arena.line_clear = lambda a, b: True
+        bot.hostile_until[1] = 10.
         origin, target = [p[0], p[1], p[2] + 7], [p[0] + 80, p[1], p[2] + 4.5]
         lead = intercept(origin, target, enemy['vel'], 252.)
         obs['self']['aim'] = [math.atan2(lead[1] - p[1], lead[0] - p[0]), math.atan2(lead[2] - origin[2], math.hypot(lead[0] - p[0], lead[1] - p[1]))]
