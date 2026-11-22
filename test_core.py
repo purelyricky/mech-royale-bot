@@ -251,6 +251,7 @@ class Semantics(unittest.TestCase):
 
     def test_recovery_selects_cover_stops_lightning_and_resumes_after_healing(self):
         bot = Bot(HELLO)
+        bot.use_recovery = True
         bot.arena.ground = lambda *args: 0.
         bot.arena.clear_at = lambda *args, **kwargs: True
         bot.arena.walk_clear = lambda *args: True
@@ -287,6 +288,7 @@ class Semantics(unittest.TestCase):
 
     def test_unseen_attacker_bearing_causes_escape_instead_of_waiting(self):
         bot = Bot(HELLO)
+        bot.use_recovery = True
         bot.arena.ground = lambda *args: 0.
         bot.arena.clear_at = lambda *args, **kwargs: True
         bot.arena.walk_clear = lambda *args: True
@@ -302,6 +304,20 @@ class Semantics(unittest.TestCase):
         self.assertLess(action['move'][0],-.5)
         self.assertAlmostEqual(angle_delta(action['aim'][0],0.),0.)
         self.assertFalse(any(action['fire']))
+
+    def test_default_dodge_mode_keeps_firing_at_low_health(self):
+        bot = Bot(HELLO)
+        bot.arena.walk_clear = lambda *args: True
+        bot.arena.line_clear = lambda *args: True
+        obs = copy.deepcopy(OBSERVATIONS[0])
+        me = obs['self']
+        me.update(pos=[0.,0.,0.],vel=[0.,0.,0.],aim=[0.,0.],grounded=True,in_zone=True,hp=me['max_hp']*.5,energy=me['max_energy'])
+        me['weapons'][1] = dict(kind='lightning',cooldown=0.,stats=HELLO['config']['weapons']['lightning'])
+        obs.update(mechs=[dict(id=100,kind='mech',pos=[30.,0.,0.],vel=[0.,0.,0.],aim=[math.pi,0.],hp=1400.,cubes=0,weapons=['gun'])],events=[],projectiles=[],drops=[])
+        bot.goal,bot.goal_until = (0.,0.),100.
+        action = bot.act(obs)
+        self.assertFalse(bot.healing)
+        self.assertTrue(action['fire'][1])
 
     def test_tall_mech_routes_around_bridge_that_small_mech_can_use(self):
         arena = object.__new__(Arena)

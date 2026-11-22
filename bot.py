@@ -51,6 +51,7 @@ def future_circle(zone, now, future):
 class Bot:
     name = 'Oval Sentinel'
     use_jets = False
+    use_recovery = False
 
     def __init__(self, hello):
         self.config = hello['config']
@@ -730,7 +731,7 @@ class Bot:
         me, now = obs['self'], obs['t']
         self.remember(obs)
         was_healing = self.healing
-        if not me['in_zone'] or obs['alive'] <= 2 or obs['zone']['radius'] < 35 or me['hp'] >= .9*me['max_hp']:
+        if not self.use_recovery or not me['in_zone'] or obs['alive'] <= 2 or obs['zone']['radius'] < 35 or me['hp'] >= .9*me['max_hp']:
             self.healing = False
         elif me['hp'] < .55*me['max_hp'] or (now-self.last_kill < .2 and me['hp'] < .9*me['max_hp']):
             self.healing = True
