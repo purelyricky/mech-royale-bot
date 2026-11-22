@@ -223,6 +223,25 @@ class Semantics(unittest.TestCase):
         self.assertFalse(partial)
         self.assertAlmostEqual(point[2], 18.4)
 
+    def test_safe_travel_can_spend_energy_but_reserves_it_near_hostiles(self):
+        bot = Bot(HELLO)
+        bot.arena.walk_clear = lambda *args: True
+        bot.arena.line_clear = lambda *args: True
+        obs = copy.deepcopy(OBSERVATIONS[0])
+        me = obs['self']
+        me.update(pos=[0., 0., 0.], vel=[0., 0., 0.], in_zone=True, grounded=True, hp=me['max_hp'], energy=me['max_energy'])
+        obs['projectiles'] = []
+        obs['zone'].update(center=[0., 0.], next_center=[0., 0.], radius=300., next_radius=300.)
+        _, boost, jump = bot.movement(obs, [100., 0.])
+        self.assertTrue(boost)
+        self.assertFalse(jump)
+        me['energy'] = .3 * me['max_energy']
+        self.assertFalse(bot.movement(obs, [100., 0.])[1])
+        me['energy'] = me['max_energy']
+        bot.threats = [dict(id=100, kind='mech', pos=[80., 0., 0.], vel=[0., 0., 0.], hp=1400., weight=1., aim=[math.pi, 0.])]
+        bot.hostile_until[100] = obs['t'] + 3
+        self.assertFalse(bot.movement(obs, [100., 0.])[1])
+
     def test_tall_mech_routes_around_bridge_that_small_mech_can_use(self):
         arena = object.__new__(Arena)
         arena.valid, arena.terrain, arena.ring_rows, arena.nav_cache = True, [], {}, {}

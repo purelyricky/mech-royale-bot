@@ -65,6 +65,7 @@ class Bot:
         self.route_until = -1.
         self.nav_shape = None
         self.previous_move = (0., 0.)
+        self.cruise_boost = False
         self.last_damage = -100.
         self.last_combat = -100.
         self.last_hp = None
@@ -337,6 +338,12 @@ class Bot:
         speed = stats.get('walk_speed', 11.7)
         radius = stats.get('radius', 2.5) + .25
         height = stats.get('height', 9.)
+        charging = any(w and w.get('charge', 0) > 0 for w in me['weapons'])
+        danger = any(e['kind'] == 'mech' and (distance(e['pos'], me['pos']) < 55 or self.hostile_until.get(e['id'], -1) > now) and distance(e['pos'], me['pos']) < 130 for e in self.threats)
+        threshold = .4 if self.cruise_boost else .85
+        self.cruise_boost = bool(me['grounded'] and me['in_zone'] and not charging and not danger and me['hp'] > .8 * me['max_hp'] and distance(me['pos'], waypoint) > 16 and me['energy'] > me['max_energy'] * threshold)
+        if self.cruise_boost:
+            speed = stats.get('boost_speed', self.config['mech']['boost_speed'])
         wanted = unit(waypoint[0] - x, waypoint[1] - y)
         current_dist = distance((x, y), waypoint)
         arrival_speed = min(1., current_dist / max(1., speed * .85))
@@ -398,6 +405,7 @@ class Bot:
         energy = me['energy']
         nearest = distance(me['pos'], close[0]['pos']) if close else 1e6
         boost = me['grounded'] and energy > 30 and (not me['in_zone'] or (nearest < 85 and me['hp'] < .8 * me['max_hp']))
+        boost = boost or self.cruise_boost
         if me['in_zone'] and energy < me['max_energy'] * .38:
             boost = False
         # Stuck recovery is deliberate, not an unconditional jump every few seconds.
