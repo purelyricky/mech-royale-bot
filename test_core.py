@@ -223,6 +223,25 @@ class Semantics(unittest.TestCase):
         self.assertFalse(partial)
         self.assertAlmostEqual(point[2], 18.4)
 
+    def test_established_duel_strafes_at_useful_gun_range(self):
+        bot = Bot(HELLO)
+        bot.arena.walk_clear = lambda *args: True
+        bot.arena.line_clear = lambda *args: True
+        obs = copy.deepcopy(OBSERVATIONS[0])
+        obs['self']['pos'] = [0., 0., 0.]
+        obs['self']['vel'] = [0., 0., 0.]
+        obs['self']['in_zone'] = True
+        obs['self']['hp'] = obs['self']['max_hp']
+        obs['zone'].update(center=[0., 0.], next_center=[0., 0.], radius=300., next_radius=300.)
+        enemy = dict(id=100, kind='mech', pos=[85., 0., 0.], vel=[0., 0., 0.], aim=[math.pi, 0.], hp=1400., cubes=0, weapons=['gun'], weight=1.)
+        obs['mechs'] = [enemy]
+        obs['projectiles'] = []
+        bot.hostile_until[100] = obs['t'] + 3
+        bot.threats = [enemy]
+        move, _, _ = bot.movement(obs, [0., -100.])
+        self.assertGreater(abs(move[1]), .8)
+        self.assertLess(abs(move[0]), .55)
+
     def test_tall_mech_routes_around_bridge_that_small_mech_can_use(self):
         arena = object.__new__(Arena)
         arena.valid, arena.terrain, arena.ring_rows, arena.nav_cache = True, [], {}, {}

@@ -337,6 +337,30 @@ class Bot:
         speed = stats.get('walk_speed', 11.7)
         radius = stats.get('radius', 2.5) + .25
         height = stats.get('height', 9.)
+        # In an established duel, preserve a firing lane rather than walking
+        # toward an unrelated loot/zone point and repeatedly turning away.
+        duelists = []
+        if me['in_zone'] and me['hp'] > .55 * me['max_hp']:
+            origin = [x, y, z + stats.get('muzzle_height', 7.)]
+            for enemy in obs['mechs']:
+                d = distance(me['pos'], enemy['pos'])
+                if enemy['kind'] != 'mech' or d > 140 or self.hostile_until.get(enemy['id'], -1) < now:
+                    continue
+                point, _ = self.visible_aim_point(enemy, origin)
+                if point is not None:
+                    duelists.append((d - (18 if enemy['id'] == self.focus_id else 0), enemy))
+        if duelists:
+            enemy = min(duelists, key=lambda e: e[0])[1]
+            ex, ey = unit(enemy['pos'][0] - x, enemy['pos'][1] - y)
+            d = distance(me['pos'], enemy['pos'])
+            laser = any(w and w['kind'] == 'laser' for w in me['weapons'])
+            near, far = (100., 130.) if laser else (65., 105.)
+            radial = min(1., (d - far) / 20.) if d > far else max(-1., (d - near) / 20.) if d < near else 0.
+            direction = self.orbit * (-1 if int((now + self.scan_phase) / 1.25) % 2 else 1)
+            dx, dy = unit(radial * ex - direction * ey * .85, radial * ey + direction * ex * .85)
+            point = (x + dx * 18, y + dy * 18)
+            if self.zone_cost(point, obs, 5) < .5:
+                waypoint = point
         wanted = unit(waypoint[0] - x, waypoint[1] - y)
         current_dist = distance((x, y), waypoint)
         arrival_speed = min(1., current_dist / max(1., speed * .85))
