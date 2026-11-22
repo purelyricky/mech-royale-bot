@@ -69,6 +69,8 @@ class Bot:
         self.last_positions = []
         self.threats = []
         self.memory = {}
+        self.items = {'pickups': {}, 'cubes': {}, 'crates': {}}
+        self.focus_id = None
         self.orbit = self.rng.choice((-1, 1))
         self.scan_phase = self.rng.uniform(-math.pi, math.pi)
         self.deadline = math.inf
@@ -89,6 +91,19 @@ class Bot:
             copy['pos'] = [actor['pos'][i] + actor['vel'][i] * min(age, .7) for i in range(3)]
             self.threats.append(copy)
         self.threats.sort(key=lambda e: distance(e['pos'], obs['self']['pos']))
+        for kind, remembered in self.items.items():
+            visible_ids = {item['id'] for item in obs[kind]}
+            for item in obs[kind]:
+                remembered[item['id']] = (now, dict(item))
+            for idx, (seen, item) in list(remembered.items()):
+                d = distance(item['pos'], obs['self']['pos'])
+                p = item['pos']
+                me = obs['self']
+                eye = [me['pos'][0], me['pos'][1], me['pos'][2] + me['stats'].get('eye_height', 8)]
+                expired = now - seen > (45 if kind == 'pickups' else 20)
+                missing_nearby = idx not in visible_ids and d < 40 and self.arena.line_clear(eye, [p[0], p[1], p[2] + 1])
+                if expired or missing_nearby:
+                    del remembered[idx]
         for event in obs['events']:
             if event['type'] == 'damaged':
                 self.last_damage = now
@@ -106,6 +121,8 @@ class Bot:
             if enemy['kind'] == 'npc' and d > 65:
                 weight *= .2
             power = 1 + .05 * min(enemy.get('cubes', 0), 10)
+            if enemy['kind'] == 'mech':
+                power *= .55 + .45 * min(1., enemy.get('hp', 1400) / max(1., enemy.get('max_hp', 1400)))
             r = weight * power * (17000 / (d + 28) ** 2 + max(0., 65 - d) * .025)
             if enemy.get('charging'):
                 ex, ey = point[0] - enemy['pos'][0], point[1] - enemy['pos'][1]
@@ -169,18 +186,19 @@ class Bot:
                 reward = -4. if npc else -5. - max(0., 800 - enemy.get('hp', 1400)) * .004
                 candidates.append((point, 'engage', enemy['id'], reward))
         # Resources are deliberately local; crossing the map to chase a cube is rarely safe.
-        for cube in obs['cubes']:
+        for _, cube in self.items['cubes'].values():
             d = distance(pos, cube['pos'])
             if d < 85 and abs(cube['pos'][2] - self.arena.ground(*cube['pos'][:2])) < 4:
                 candidates.append((cube['pos'][:2], 'cube', cube['id'], -6.5 / (1 + d / 50)))
         held = {w['kind'] for w in me['weapons'] if w}
-        for pickup in obs['pickups']:
+        for _, pickup in self.items['pickups'].values():
             d = distance(pos, pickup['pos'])
-            if d < 65 and pickup['kind'] not in held and abs(pickup['pos'][2] - self.arena.ground(*pickup['pos'][:2])) < 4:
-                value = {'laser': 6., 'lightning': 4., 'mortar': 2., 'gun': 0.}.get(pickup['kind'], 0)
+            if d < 160 and pickup['kind'] not in held and abs(pickup['pos'][2] - self.arena.ground(*pickup['pos'][:2])) < 4:
+                value = {'laser': 12., 'lightning': 4., 'mortar': 0., 'gun': 0.}.get(pickup['kind'], 0)
                 if len(held) >= 2:
                     value = max(0., value - 4)
-                candidates.append((pickup['pos'][:2], 'weapon', pickup['id'], -value / (1 + d / 60)))
+                if value:
+                    candidates.append((pickup['pos'][:2], 'weapon', pickup['id'], -value / (1 + d / 100)))
         if peaceful and me['hp'] > me['max_hp'] * .7:
             for crate in obs['crates']:
                 d = distance(pos, crate['pos'])
@@ -345,11 +363,11 @@ class Bot:
                 break
             d = distance(pos, actor['pos'])
             if actor['kind'] == 'npc':
-                if d > 75 or any(e['kind'] == 'mech' and distance(pos, e['pos']) < 110 for e in self.threats):
+                if d > 75 or me['hp'] < .85 * me['max_hp'] or any(e['kind'] == 'mech' and distance(pos, e['pos']) < 150 for e in self.threats):
                     continue
                 score = d + 65
             else:
-                score = d - min(60., max(0., 700 - actor.get('hp', 1400)) * .09)
+                score = d * .5 + actor.get('hp', 1400) * .075 - (18 if actor['id'] == self.focus_id else 0)
             h = (self.config['npc']['height'] * .55 if actor['kind'] == 'npc' else 4.5 * (1 + .05 * actor.get('cubes', 0)))
             point = [actor['pos'][0], actor['pos'][1], actor['pos'][2] + h]
             if d < 280 and self.arena.line_clear(origin, point):
@@ -368,6 +386,7 @@ class Bot:
         fire = [False, False]
         if target:
             actor, point = target
+            self.focus_id = actor['id']
             d = distance(pos, point)
             # When a ready laser is present aim directly; otherwise lead with the arm gun.
             gun = next((w for w in weapons if w and w['kind'] == 'gun'), None)
@@ -429,8 +448,11 @@ class Bot:
                 if relevant:
                     action['aim'] = [min(relevant, key=lambda s: ({'near': 0, 'mid': 1, 'far': 2}[s['dist']], s['age']))['bearing'], 0.]
             if 'aim' not in action:
-                # A slow periodic full sweep detects loot and approaches outside the forward wedge.
-                action['aim'] = [self.scan_phase + now * .7, 0.]
+                if self.goal_kind in ('weapon', 'crate', 'cube'):
+                    action['aim'] = [math.atan2(self.goal[1] - pos[1], self.goal[0] - pos[0]), 0.]
+                else:
+                    # A slow periodic full sweep detects loot outside the forward wedge.
+                    action['aim'] = [self.scan_phase + now * .7, 0.]
             for w in weapons:
                 if w and w['kind'] == 'gun' and w.get('ammo', 12) < self.weapon_stats(w)['mag'] and not w.get('reload', 0):
                     action['reload'] = True
@@ -452,7 +474,7 @@ class Bot:
             action['pick'] = max(range(len(offer['choices'])), key=lambda i: priorities.get(offer['choices'][i]['id'], 20))
         held = {w['kind'] for w in me['weapons'] if w}
         reach = self.config['loot']['pickup_radius']
-        near = [p for p in obs['pickups'] if p['kind'] not in held and distance(me['pos'], p['pos']) < reach and abs(me['pos'][2] - p['pos'][2]) <= 4]
+        near = [p for p in obs['pickups'] if p['kind'] not in held and p['kind'] != 'mortar' and distance(me['pos'], p['pos']) < reach and abs(me['pos'][2] - p['pos'][2]) <= 4]
         if near:
             values = {'gun': 0, 'mortar': 1, 'lightning': 2, 'laser': 3}
             pickup = max(near, key=lambda p: values.get(p['kind'], 0))
@@ -460,7 +482,7 @@ class Bot:
             if empty is not None:
                 action['take'] = pickup['id']
             else:
-                old = min(range(2), key=lambda i: values.get(me['weapons'][i]['kind'], 0) if me['weapons'][i]['kind'] != 'gun' else 1.5)
+                old = min(range(2), key=lambda i: values.get(me['weapons'][i]['kind'], 0) if me['weapons'][i]['kind'] != 'gun' else 100)
                 weapon = me['weapons'][old]
                 if values.get(pickup['kind'], 0) > values.get(weapon['kind'], 0) and not weapon.get('charge', 0):
                     action.update(take=pickup['id'], drop=old)
