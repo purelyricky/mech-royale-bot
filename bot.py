@@ -603,7 +603,8 @@ class Bot:
             action['pick'] = max(range(len(offer['choices'])), key=lambda i: priorities.get(offer['choices'][i]['id'], 20))
         held = {w['kind'] for w in me['weapons'] if w}
         reach = self.config['loot']['pickup_radius']
-        near = [p for p in obs['pickups'] if p['kind'] not in held and distance(me['pos'], p['pos']) < reach and abs(me['pos'][2] - p['pos'][2]) <= 4]
+        laser_danger = any(e['kind'] == 'mech' and 'laser' in e.get('weapons', []) and distance(me['pos'], e['pos']) < 180 and (self.ffa or self.hostile_until.get(e['id'], -1) > now) for e in obs['mechs'])
+        near = [p for p in obs['pickups'] if p['kind'] not in held and not (p['kind'] == 'mortar' and laser_danger) and distance(me['pos'], p['pos']) < reach and abs(me['pos'][2] - p['pos'][2]) <= 4]
         if near:
             values = {'gun': 0, 'mortar': 1, 'lightning': 2, 'laser': 3}
             pickup = max(near, key=lambda p: values.get(p['kind'], 0))
@@ -615,6 +616,11 @@ class Bot:
                 weapon = me['weapons'][old]
                 if values.get(pickup['kind'], 0) > values.get(weapon['kind'], 0) and not weapon.get('charge', 0):
                     action.update(take=pickup['id'], drop=old)
+        if laser_danger:
+            slot = next((i for i,w in enumerate(me['weapons']) if w and w['kind'] == 'mortar'), None)
+            if slot is not None:
+                action.setdefault('drop', slot)
+                action['fire'][slot] = False
         mf.draw.point([waypoint[0], waypoint[1], self.arena.ground(*waypoint)], '#4cf', 4)
         mf.draw.label(f'{"FFA " if self.ffa else ""}{self.goal_kind} hp {me["hp"]:.0f}')
         return action

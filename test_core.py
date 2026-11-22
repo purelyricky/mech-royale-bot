@@ -223,6 +223,29 @@ class Semantics(unittest.TestCase):
         self.assertFalse(partial)
         self.assertAlmostEqual(point[2], 18.4)
 
+    def test_mortar_is_dropped_for_laser_and_not_repicked_until_safe(self):
+        bot = Bot(HELLO)
+        bot.arena.walk_clear = lambda *args: True
+        bot.arena.line_clear = lambda *args: True
+        obs = copy.deepcopy(OBSERVATIONS[0])
+        me = obs['self']
+        me.update(pos=[0., 0., 0.], vel=[0., 0., 0.], in_zone=True, grounded=True, hp=me['max_hp'])
+        me['weapons'][1] = dict(kind='mortar', cooldown=0., stats=HELLO['config']['weapons']['mortar'])
+        enemy = dict(id=100, kind='mech', pos=[80., 0., 0.], vel=[0., 0., 0.], aim=[math.pi, 0.], hp=1400., cubes=0, weapons=['gun','laser'])
+        obs.update(mechs=[enemy], cubes=[], crates=[], pickups=[], drops=[], projectiles=[], events=[])
+        bot.hostile_until[100] = obs['t'] + 3
+        bot.goal, bot.goal_until = (0., 0.), obs['t'] + 100
+        action = bot.act(obs)
+        self.assertEqual(action['drop'], 1)
+        self.assertFalse(action['fire'][1])
+        me['weapons'][1] = None
+        obs['pickups'] = [dict(id=8000, kind='mortar', pos=[0.,0.,0.])]
+        action = bot.act(obs)
+        self.assertNotIn('take', action)
+        enemy['weapons'] = ['gun']
+        action = bot.act(obs)
+        self.assertEqual(action.get('take'), 8000)
+
     def test_mortar_launch_can_hit_a_body_and_never_fires_at_unsafe_close_range(self):
         bot = Bot(HELLO)
         bot.arena.line_clear = lambda *args: True
