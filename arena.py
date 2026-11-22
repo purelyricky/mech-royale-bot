@@ -41,6 +41,7 @@ class Arena:
         self.terrain = array('h')
         self.bounds = (-512., 555., -333., 388.)
         self.grid = bytearray()
+        self.nav_cache = {}
         self.radius = mech.get('radius', 2.5) + 0.6
         self.height = mech.get('height', 9.)
         self.step_up = mech.get('step_up', 1.2)
@@ -258,12 +259,16 @@ class Arena:
     def grid_point(self, idx):
         return self.x0 + (idx % self.nx) * self.cell, self.y0 + (idx // self.nx) * self.cell
 
-    def nearest_open(self, point, reachable=False):
+    def nearest_open(self, point, reachable=False, allowed=None, radius=None, height=None, deadline=math.inf):
+        allowed = allowed or (lambda idx: bool(self.grid[idx]))
+        body_radius = self.radius - .5 if radius is None else radius
         idx = self.grid_index(point)
-        if self.grid[idx] and (not reachable or self.walk_clear(point, self.grid_point(idx), self.radius - .5)):
+        if allowed(idx) and (not reachable or self.walk_clear(point, self.grid_point(idx), body_radius, height)):
             return idx
         i, j = idx % self.nx, idx // self.nx
         for radius in range(1, 18):
+            if time.perf_counter() > deadline:
+                break
             options = []
             for dy in range(-radius, radius + 1):
                 for dx in range(-radius, radius + 1):
@@ -272,21 +277,36 @@ class Arena:
                     x, y = i + dx, j + dy
                     if 0 <= x < self.nx and 0 <= y < self.ny:
                         k = y * self.nx + x
-                        if self.grid[k]:
+                        if allowed(k):
                             options.append(((self.grid_point(k)[0] - point[0]) ** 2 + (self.grid_point(k)[1] - point[1]) ** 2, k))
             if options:
                 options.sort()
                 for _, candidate in options:
-                    if not reachable or self.walk_clear(point, self.grid_point(candidate), self.radius - .5):
+                    if not reachable or self.walk_clear(point, self.grid_point(candidate), body_radius, height):
                         return candidate
         return idx
 
-    def path(self, start, goal, limit=2200, deadline=math.inf):
+    def path(self, start, goal, limit=2200, deadline=math.inf, radius=None, height=None):
         """A bounded A*: return the best partial path when a long search needs more time."""
         if not self.grid:
             return [tuple(goal[:2])]
-        s, g = self.nearest_open(start, reachable=True), self.nearest_open(goal)
-        if not self.grid[s] or not self.grid[g]:
+        radius = self.radius if radius is None else radius
+        height = self.height if height is None else height
+        shape_cache = self.nav_cache.setdefault((round(radius, 2), round(height, 2)), {})
+        if len(self.nav_cache) > 4:
+            self.nav_cache.pop(next(iter(self.nav_cache)))
+        def allowed(idx):
+            if not self.grid[idx]:
+                return False
+            if radius <= self.radius and height <= self.height:
+                return True
+            if idx not in shape_cache:
+                x, y = self.grid_point(idx)
+                shape_cache[idx] = self.clear_at(x, y, self.heights[idx], max(radius, self.radius), max(height, self.height))
+            return shape_cache[idx]
+        s = self.nearest_open(start, reachable=True, allowed=allowed, radius=radius, height=height, deadline=deadline)
+        g = self.nearest_open(goal, allowed=allowed, radius=radius, height=height, deadline=deadline)
+        if not allowed(s) or not allowed(g):
             return [tuple(goal[:2])]
         gx, gy = g % self.nx, g // self.nx
         def heuristic(idx):
@@ -314,9 +334,9 @@ class Arena:
                 if not (0 <= x + dx < self.nx and 0 <= y + dy < self.ny):
                     continue
                 nxt = idx + dx + dy * self.nx
-                if not self.grid[nxt]:
+                if not allowed(nxt):
                     continue
-                if dx and dy and (not self.grid[idx + dx] or not self.grid[idx + dy * self.nx]):
+                if dx and dy and (not allowed(idx + dx) or not allowed(idx + dy * self.nx)):
                     continue
                 climb = self.heights[nxt] - self.heights[idx]
                 if climb > self.step_up and climb > self.cell * weight * self.max_slope:
@@ -331,6 +351,6 @@ class Arena:
             route.append(parents[route[-1]])
         route.reverse()
         points = [self.grid_point(k) for k in route]
-        if best == g and self.clear_at(*goal[:2]):
+        if best == g and self.clear_at(goal[0], goal[1], radius=radius, height=height):
             points.append(tuple(goal[:2]))
         return points or [tuple(start[:2])]

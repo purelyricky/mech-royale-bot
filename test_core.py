@@ -1,5 +1,6 @@
 """Semantic and workload checks; run with `python test_core.py KIT_DIRECTORY`."""
 import copy
+from array import array
 import gzip
 import json
 import math
@@ -222,11 +223,37 @@ class Semantics(unittest.TestCase):
         self.assertFalse(partial)
         self.assertAlmostEqual(point[2], 18.4)
 
+    def test_tall_mech_routes_around_bridge_that_small_mech_can_use(self):
+        arena = object.__new__(Arena)
+        arena.valid, arena.terrain, arena.ring_rows, arena.nav_cache = True, [], {}, {}
+        arena.radius, arena.height, arena.step_up = 2.5, 9., 1.2
+        arena.max_slope = math.tan(math.radians(50))
+        arena.bounds = (-5., 37., -17., 17.)
+        arena.nx, arena.ny, arena.x0, arena.y0 = 9, 7, 0., -12.
+        arena.grid = bytearray([1]) * 63
+        arena.heights = array('f', [0.]) * 63
+        ring = [8., -4., 16., -4., 16., 4., 8., 4.]
+        edges = [(ring[i - 2], ring[i - 1], ring[i], ring[i + 1]) for i in range(0, len(ring), 2)]
+        arena.prisms = [(10., 12., [ring], edges, (8., 16., -4., 4.))]
+        arena.buckets = {(0, -1): [0], (0, 0): [0]}
+        arena.edge_grids = [{(0, -1): edges, (0, 0): edges}]
+        start, goal = (0., 0., 0.), (32., 0.)
+        self.assertTrue(arena.walk_clear(start, goal, 2.5, 9.))
+        self.assertFalse(arena.walk_clear(start, goal, 2.5, 11.))
+        small = arena.path(start, goal, radius=2.5, height=9.)
+        tall = arena.path(start, goal, radius=2.5, height=11.)
+        self.assertTrue(all(abs(p[1]) < .01 for p in small))
+        self.assertGreaterEqual(max(abs(p[1]) for p in tall), 8.)
+        self.assertTrue(all(arena.walk_clear(a, b, 2.5, 11.) for a, b in zip(tall, tall[1:])))
+
 
 def workload():
     bot = Bot(HELLO)
     obs = copy.deepcopy(OBSERVATIONS[0])
     obs['self']['pos'] = [0., 0., bot.arena.ground(0, 0)]
+    obs['self']['cubes'] = 8
+    for key in ('radius', 'height', 'eye_height', 'muzzle_height'):
+        obs['self']['stats'][key] = HELLO['config']['mech'][key] * 1.4
     obs['zone']['next_center'] = [200., 150.]
     obs['zone']['next_radius'] = 70.
     obs['zone']['shrink_start'] = 0.

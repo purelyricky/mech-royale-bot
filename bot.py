@@ -63,6 +63,7 @@ class Bot:
         self.route = []
         self.route_goal = None
         self.route_until = -1.
+        self.nav_shape = None
         self.previous_move = (0., 0.)
         self.last_damage = -100.
         self.last_combat = -100.
@@ -306,20 +307,25 @@ class Bot:
 
     def waypoint(self, obs):
         pos, now = obs['self']['pos'], obs['t']
+        radius = obs['self']['stats'].get('radius', self.config['mech']['radius']) + .25
+        height = obs['self']['stats'].get('height', self.config['mech']['height'])
+        shape = round(radius, 2), round(height, 2)
+        if shape != self.nav_shape:
+            self.route, self.route_until, self.nav_shape = [], -1., shape
         if distance(pos, self.goal) < 5:
             return self.goal
-        if self.arena.walk_clear(pos, self.goal):
+        if self.arena.walk_clear(pos, self.goal, radius, height):
             self.route = []
             return self.goal
         if now >= self.route_until or self.route_goal is None or distance(self.route_goal, self.goal) > 12 or not self.route:
-            self.route = self.arena.path(pos, self.goal, deadline=self.deadline - .012)
+            self.route = self.arena.path(pos, self.goal, deadline=self.deadline - .012, radius=radius, height=height)
             self.route_goal = self.goal
             self.route_until = now + 1.8
         # Skip only short, verified segments so grid corners cannot cut through buildings.
         while len(self.route) > 1 and distance(pos, self.route[0]) < 5:
             self.route.pop(0)
         for k in range(min(5, len(self.route) - 1), 0, -1):
-            if self.arena.walk_clear(pos, self.route[k]):
+            if self.arena.walk_clear(pos, self.route[k], radius, height):
                 self.route = self.route[k:]
                 break
         return self.route[0] if self.route else self.goal
