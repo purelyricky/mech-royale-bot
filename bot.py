@@ -270,7 +270,8 @@ class Bot:
                 d = distance(pos, npc['pos'])
                 if npc['kind'] == 'npc' and d < 110 and reachable_item(npc):
                     ux, uy = unit(pos[0] - npc['pos'][0], pos[1] - npc['pos'][1])
-                    point = npc['pos'][0] + ux * 55, npc['pos'][1] + uy * 55
+                    farm_range = .82*self.weapon_stats(lightning)['range'] if hybrid else 55.
+                    point = npc['pos'][0] + ux * farm_range, npc['pos'][1] + uy * farm_range
                     candidates.append((point, 'farm', npc['id'], -8. / (1 + d / 110)))
         for drop in obs.get('drops', []):
             d = distance(pos, drop['pos'])
@@ -343,6 +344,15 @@ class Bot:
         x, y, z = me['pos']
         stats = me['stats']
         speed = stats.get('walk_speed', 11.7)
+        held_now = {w['kind'] for w in me['weapons'] if w}
+        lightning = next((w for w in me['weapons'] if w and w['kind']=='lightning'),None)
+        close_duel = bool(held_now=={'laser','lightning'} and self.goal_kind in ('engage','farm'))
+        duel_distance = min((distance(me['pos'],e['pos']) for e in self.threats if e['id']==self.goal_id),default=1e6)
+        closing_boost = bool(close_duel and me['grounded'] and me['energy']>60 and 45<duel_distance<120)
+        if closing_boost:
+            speed = stats.get('boost_speed',19.5)
+        if close_duel and any(w and w.get('charge',0)>0 for w in me['weapons']):
+            speed *= stats.get('charge_move_mult',.5)
         radius = stats.get('radius', 2.5) + .25
         height = stats.get('height', 9.)
         wanted = unit(waypoint[0] - x, waypoint[1] - y)
@@ -372,8 +382,11 @@ class Bot:
                 ex, ey = unit(enemy['pos'][0] - x, enemy['pos'][1] - y)
                 lateral = abs(ux * ey - uy * ex)
                 score -= .45 * lateral
-                if distance((x, y), enemy['pos']) < 55:
+                minimum = self.weapon_stats(lightning)['range']*.75 if close_duel else 55.
+                if distance((x, y), enemy['pos']) < minimum:
                     score += max(0., ux * ex + uy * ey) * 1.4
+                if close_duel:
+                    score += max(0.,distance((px,py),enemy['pos'])-self.weapon_stats(lightning)['range']+3)*.12
                 if ux == 0 and uy == 0:
                     score += 1.2
             score += .1 * ((ux - self.previous_move[0]) ** 2 + (uy - self.previous_move[1]) ** 2)
@@ -406,9 +419,8 @@ class Bot:
         energy = me['energy']
         nearest = distance(me['pos'], close[0]['pos']) if close else 1e6
         boost = me['grounded'] and energy > 30 and (not me['in_zone'] or (nearest < 85 and me['hp'] < .8 * me['max_hp']))
-        held_now = {w['kind'] for w in me['weapons'] if w}
-        if held_now == {'laser', 'lightning'} and self.goal_kind == 'engage' and me['grounded'] and energy > 60 and 45 < nearest < 120:
-            boost = True
+        if close_duel and me['in_zone']:
+            boost = closing_boost
         if me['in_zone'] and energy < me['max_energy'] * .38:
             boost = False
         # Stuck recovery is deliberate, not an unconditional jump every few seconds.

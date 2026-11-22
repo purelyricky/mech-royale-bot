@@ -223,6 +223,54 @@ class Semantics(unittest.TestCase):
         self.assertFalse(partial)
         self.assertAlmostEqual(point[2], 18.4)
 
+    def test_complementary_pickup_preserves_both_secondary_weapons(self):
+        bot = Bot(HELLO)
+        bot.arena.walk_clear = lambda *args: True
+        bot.arena.line_clear = lambda *args: True
+        obs = copy.deepcopy(OBSERVATIONS[0])
+        me = obs['self']
+        me['weapons'][1] = dict(kind='laser',cooldown=0.,charge=0.,stats=HELLO['config']['weapons']['laser'])
+        obs.update(mechs=[],projectiles=[],events=[],drops=[],pickups=[dict(id=8000,kind='lightning',pos=me['pos'][:])])
+        bot.goal,bot.goal_until = tuple(me['pos'][:2]),100.
+        action = bot.act(obs)
+        self.assertEqual((action.get('take'),action.get('drop')),(8000,0))
+        me['weapons'][0] = dict(kind='lightning',cooldown=0.,stats=HELLO['config']['weapons']['lightning'])
+        obs['pickups'] = [dict(id=8001,kind='gun',pos=me['pos'][:])]
+        self.assertNotIn('take',bot.act(obs),'do not immediately re-pick dropped gun')
+
+    def test_dual_loadout_closes_to_live_lightning_range_and_fires_both(self):
+        bot = Bot(HELLO)
+        bot.arena.ground = lambda *args: 0.
+        bot.arena.clear_at = lambda *args, **kwargs: True
+        bot.arena.walk_clear = lambda *args: True
+        bot.arena.line_clear = lambda *args: True
+        obs = copy.deepcopy(OBSERVATIONS[0])
+        me = obs['self']
+        me.update(pos=[0.,0.,0.],vel=[0.,0.,0.],hp=me['max_hp'],energy=me['max_energy'],in_zone=True,grounded=True,aim=[0.,0.])
+        me['weapons'] = [dict(kind='laser',cooldown=0.,charge=.3,stats=HELLO['config']['weapons']['laser']),dict(kind='lightning',cooldown=0.,stats=HELLO['config']['weapons']['lightning'])]
+        enemy = dict(id=100,kind='mech',pos=[60.,0.,0.],vel=[0.,0.,0.],aim=[math.pi,0.],hp=1400.,cubes=0,weapons=['gun','laser'])
+        obs.update(mechs=[enemy],projectiles=[],events=[],cubes=[],crates=[],pickups=[],drops=[])
+        obs['zone'].update(center=[0.,0.],next_center=[0.,0.],radius=300.,next_radius=300.)
+        bot.hostile_until[100] = 100.
+        bot.remember(obs)
+        bot.select_goal(obs)
+        self.assertEqual(bot.goal_kind,'engage')
+        self.assertAlmostEqual(math.dist(bot.goal,enemy['pos'][:2]),.82*HELLO['config']['weapons']['lightning']['range'])
+        move,boost,_ = bot.movement(obs,bot.goal)
+        self.assertGreater(move[0],.5)
+        self.assertTrue(boost)
+        enemy['pos'] = [30.,0.,0.]
+        me['aim'] = [0.,math.atan2(-2.5,30.)]
+        action = {}
+        bot.shooting(obs,action)
+        self.assertTrue(all(action['fire']))
+        enemy.update(kind='npc',hp=350.,weapons=[],pos=[60.,0.,0.])
+        bot.goal = None
+        bot.remember(obs)
+        bot.select_goal(obs)
+        self.assertEqual(bot.goal_kind,'farm')
+        self.assertAlmostEqual(math.dist(bot.goal,enemy['pos'][:2]),.82*HELLO['config']['weapons']['lightning']['range'])
+
     def test_tall_mech_routes_around_bridge_that_small_mech_can_use(self):
         arena = object.__new__(Arena)
         arena.valid, arena.terrain, arena.ring_rows, arena.nav_cache = True, [], {}, {}
