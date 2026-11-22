@@ -1,5 +1,12 @@
-FROM python:3.13-slim-bookworm@sha256:a5a7017efc5969e00ae2b91c8eb0631049a569652aa4ffc4501769049ae45c72
-WORKDIR /bot
-COPY mechfight.py arena.py bot.py ./
-ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
-ENTRYPOINT ["python3", "-u", "/bot/bot.py"]
+FROM golang:1.26.1-bookworm@sha256:ab3d6955bbc813a0f3fdf220c1d817dd89c0b3f283777db8ece4a32fe7858edd AS build
+WORKDIR /src
+COPY go.mod ./
+COPY cmd ./cmd
+COPY internal ./internal
+ENV CGO_ENABLED=0 GOOS=linux GOARCH=amd64 GOTOOLCHAIN=local
+RUN go build -buildvcs=false -trimpath -ldflags="-s -w" -o /out/mechbot ./cmd/mechbot
+
+FROM scratch
+COPY --from=build /out/mechbot /mechbot
+USER 65534:65534
+ENTRYPOINT ["/mechbot"]

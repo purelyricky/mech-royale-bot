@@ -13,3 +13,9 @@ target/
 data/
 *.parquet
 ref/
+
+# Native Go builds and local compiler cache
+.gocache/
+/mechbot
+/mechbot.exe
+*.test
