@@ -256,10 +256,12 @@ class Bot:
                 if value:
                     candidates.append((pickup['pos'][:2], 'weapon', pickup['id'], -value / (1 + d / 100)))
         if not hunter_near and me['hp'] > me['max_hp'] * .75 and me['cubes'] < 10:
+            known_weapon = any(item['kind'] in ('laser', 'lightning') and distance(pos, item['pos']) < 120 and reachable_item(item) for _, item in self.items['pickups'].values())
+            crate_value = 12. if len(held) < 2 and not known_weapon else 6.
             for _, crate in self.items['crates'].values():
                 d = distance(pos, crate['pos'])
                 if d < 95 and reachable_item(crate):
-                    candidates.append((crate['pos'][:2], 'crate', crate['id'], -6. / (1 + d / 80)))
+                    candidates.append((crate['pos'][:2], 'crate', crate['id'], -crate_value / (1 + d / 80)))
             for npc in obs['mechs']:
                 d = distance(pos, npc['pos'])
                 if npc['kind'] == 'npc' and d < 110 and reachable_item(npc):

@@ -223,6 +223,26 @@ class Semantics(unittest.TestCase):
         self.assertFalse(partial)
         self.assertAlmostEqual(point[2], 18.4)
 
+    def test_empty_secondary_prioritizes_safe_crate_but_keeps_known_weapon(self):
+        bot = Bot(HELLO)
+        bot.arena.clear_at = lambda *args, **kwargs: True
+        bot.arena.line_clear = lambda *args: True
+        bot.arena.ground = lambda *args: 0.
+        obs = copy.deepcopy(OBSERVATIONS[0])
+        me = obs['self']
+        me.update(pos=[0.,0.,0.],hp=me['max_hp'],grounded=True)
+        me['weapons'][1] = None
+        obs.update(mechs=[],cubes=[dict(id=5000,pos=[5.,0.,0.])],crates=[dict(id=3000,pos=[35.,0.,0.],hp=300.)],pickups=[],drops=[],events=[])
+        obs['zone'].update(center=[0.,0.],next_center=[0.,0.],radius=300.,next_radius=300.)
+        bot.remember(obs)
+        bot.select_goal(obs)
+        self.assertEqual((bot.goal_kind,bot.goal_id),('crate',3000))
+        obs['pickups'] = [dict(id=8000,kind='laser',pos=[20.,0.,0.])]
+        bot.goal = None
+        bot.remember(obs)
+        bot.select_goal(obs)
+        self.assertEqual((bot.goal_kind,bot.goal_id),('weapon',8000))
+
     def test_mortar_launch_can_hit_a_body_and_never_fires_at_unsafe_close_range(self):
         bot = Bot(HELLO)
         bot.arena.line_clear = lambda *args: True
