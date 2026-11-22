@@ -250,7 +250,7 @@ class Bot:
             if d < (260 if len(held) < 2 else 190) and pickup['kind'] not in held and reachable_item(pickup):
                 value = {'laser': 12., 'lightning': 4., 'mortar': 0., 'gun': 0.}.get(pickup['kind'], 0)
                 if len(held) < 2:
-                    value = {'laser': 18., 'lightning': 9.}.get(pickup['kind'], value)
+                    value = {'laser': 18., 'lightning': 9., 'mortar': 6. if d < 120 else 0.}.get(pickup['kind'], value)
                 if len(held) >= 2:
                     value = max(0., value - 4)
                 if value:
