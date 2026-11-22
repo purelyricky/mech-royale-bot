@@ -147,6 +147,27 @@ class Bot:
                 candidates.append(((zone['next_center'][0] + .65 * nr * math.cos(yaw), zone['next_center'][1] + .65 * nr * math.sin(yaw)), 'zone', None, 0.))
         nearest = distance(pos, self.threats[0]['pos']) if self.threats else 1e6
         peaceful = nearest > 90 and now - self.last_damage > 2
+        healthy = me['hp'] > me['max_hp'] * .72
+        close_mechs = [e for e in self.threats if e['kind'] == 'mech' and distance(pos, e['pos']) < 140]
+        if healthy and len(close_mechs) <= 1:
+            for enemy in obs['mechs']:
+                d = distance(pos, enemy['pos'])
+                if d > 220 or enemy.get('hp', 1) <= 0:
+                    continue
+                npc = enemy['kind'] == 'npc'
+                if not npc and enemy.get('hp', 1400) > 450:
+                    continue
+                if npc and (not peaceful or d > 100):
+                    continue
+                others = sum(1 for other in close_mechs if other['id'] != enemy['id'] and distance(other['pos'], enemy['pos']) < 110)
+                if others > 1:
+                    continue
+                # Approach isolated enemies while healthy, then strafe at a useful gun range.
+                standoff = 42. if npc else (85. if 'lightning' in enemy.get('weapons', []) else 75.)
+                ux, uy = unit(pos[0] - enemy['pos'][0], pos[1] - enemy['pos'][1])
+                point = enemy['pos'][0] + ux * standoff, enemy['pos'][1] + uy * standoff
+                reward = -4. if npc else -5. - max(0., 800 - enemy.get('hp', 1400)) * .004
+                candidates.append((point, 'engage', enemy['id'], reward))
         # Resources are deliberately local; crossing the map to chase a cube is rarely safe.
         for cube in obs['cubes']:
             d = distance(pos, cube['pos'])
@@ -350,7 +371,8 @@ class Bot:
             d = distance(pos, point)
             # When a ready laser is present aim directly; otherwise lead with the arm gun.
             gun = next((w for w in weapons if w and w['kind'] == 'gun'), None)
-            aim_point = point if (laser_ready or charging) else intercept(origin, point, actor.get('vel', [0, 0, 0]), self.weapon_stats(gun)['speed']) if gun else point
+            gun_point = intercept(origin, point, actor.get('vel', [0, 0, 0]), self.weapon_stats(gun)['speed']) if gun else point
+            aim_point = point if (laser_ready or charging) else gun_point
             yaw = math.atan2(aim_point[1] - pos[1], aim_point[0] - pos[0])
             pitch = math.atan2(aim_point[2] - origin[2], distance(pos, aim_point))
             action['aim'] = [yaw, max(stats.get('min_pitch', -.7), min(stats.get('max_pitch', 1.3), pitch))]
@@ -366,7 +388,10 @@ class Bot:
                     continue
                 ws, kind = self.weapon_stats(w), w['kind']
                 if kind == 'gun':
-                    fire[i] = bool(aligned and d < ws['range'] - 3 and not abstain and not (laser_ready or charging))
+                    gun_yaw = math.atan2(gun_point[1] - pos[1], gun_point[0] - pos[0])
+                    gun_pitch = math.atan2(gun_point[2] - origin[2], distance(pos, gun_point))
+                    gun_aligned = abs(angle_delta(me['aim'][0], gun_yaw)) < tolerance + .025 and abs(me['aim'][1] - gun_pitch) < max(.03, tolerance)
+                    fire[i] = bool(gun_aligned and d < ws['range'] - 3 and not abstain)
                     if not fire[i] and w.get('ammo', 12) < ws['mag'] * .65 and not w.get('reload', 0):
                         action['reload'] = True
                 elif kind == 'laser':
