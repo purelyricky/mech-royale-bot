@@ -213,6 +213,9 @@ class Bot:
         def reachable_item(item):
             return abs(item['pos'][2] - self.arena.ground(*item['pos'][:2])) < 4 or (roof and abs(item['pos'][2] - pos[2]) < 4)
         healthy = me['hp'] > me['max_hp'] * .72
+        held_now = {w['kind'] for w in me['weapons'] if w}
+        lightning = next((w for w in me['weapons'] if w and w['kind'] == 'lightning'), None)
+        hybrid = held_now == {'laser', 'lightning'}
         close_mechs = [e for e in self.threats if e['kind'] == 'mech' and distance(pos, e['pos']) < 140]
         if healthy and len(close_mechs) <= 1:
             for enemy in obs['mechs']:
@@ -220,9 +223,10 @@ class Bot:
                 if d > 220 or enemy.get('hp', 1) <= 0:
                     continue
                 npc = enemy['kind'] == 'npc'
-                if not npc and enemy.get('hp', 1400) > 450:
+                duel = bool(hybrid and not npc and me['energy'] > 22 and d < 140 and self.hostile_until.get(enemy['id'], -1) > now and 'lightning' not in enemy.get('weapons', []))
+                if not npc and enemy.get('hp', 1400) > 450 and not duel:
                     continue
-                if self.ffa and obs['alive'] > 6 and not npc and enemy.get('hp', 1400) > 250:
+                if self.ffa and obs['alive'] > 6 and not npc and enemy.get('hp', 1400) > 250 and not duel:
                     continue
                 if npc and (not peaceful or d > 100):
                     continue
@@ -231,9 +235,13 @@ class Bot:
                     continue
                 # Approach isolated enemies while healthy, then strafe at a useful gun range.
                 standoff = 42. if npc else (85. if 'lightning' in enemy.get('weapons', []) else 75.)
+                if duel:
+                    standoff = .82 * self.weapon_stats(lightning)['range']
                 ux, uy = unit(pos[0] - enemy['pos'][0], pos[1] - enemy['pos'][1])
                 point = enemy['pos'][0] + ux * standoff, enemy['pos'][1] + uy * standoff
                 reward = -4. if npc else -5. - max(0., 800 - enemy.get('hp', 1400)) * .004
+                if duel:
+                    reward = -8.
                 candidates.append((point, 'engage', enemy['id'], reward))
         # Resources are deliberately local; crossing the map to chase a cube is rarely safe.
         cube_items = [item for _, item in self.items['cubes'].values()]
@@ -398,6 +406,9 @@ class Bot:
         energy = me['energy']
         nearest = distance(me['pos'], close[0]['pos']) if close else 1e6
         boost = me['grounded'] and energy > 30 and (not me['in_zone'] or (nearest < 85 and me['hp'] < .8 * me['max_hp']))
+        held_now = {w['kind'] for w in me['weapons'] if w}
+        if held_now == {'laser', 'lightning'} and self.goal_kind == 'engage' and me['grounded'] and energy > 60 and 45 < nearest < 120:
+            boost = True
         if me['in_zone'] and energy < me['max_energy'] * .38:
             boost = False
         # Stuck recovery is deliberate, not an unconditional jump every few seconds.
@@ -611,9 +622,11 @@ class Bot:
             if empty is not None:
                 action['take'] = pickup['id']
             else:
-                old = min(range(2), key=lambda i: values.get(me['weapons'][i]['kind'], 0) if me['weapons'][i]['kind'] != 'gun' else 100)
+                complete_hybrid = ('laser' in held and pickup['kind'] == 'lightning') or ('lightning' in held and pickup['kind'] == 'laser')
+                gun_slot = next((i for i,w in enumerate(me['weapons']) if w and w['kind'] == 'gun'), None)
+                old = gun_slot if complete_hybrid and gun_slot is not None else min(range(2), key=lambda i: values.get(me['weapons'][i]['kind'], 0) if me['weapons'][i]['kind'] != 'gun' else 100)
                 weapon = me['weapons'][old]
-                if values.get(pickup['kind'], 0) > values.get(weapon['kind'], 0) and not weapon.get('charge', 0):
+                if (complete_hybrid or values.get(pickup['kind'], 0) > values.get(weapon['kind'], 0)) and not weapon.get('charge', 0):
                     action.update(take=pickup['id'], drop=old)
         mf.draw.point([waypoint[0], waypoint[1], self.arena.ground(*waypoint)], '#4cf', 4)
         mf.draw.label(f'{"FFA " if self.ffa else ""}{self.goal_kind} hp {me["hp"]:.0f}')
