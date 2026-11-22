@@ -40,6 +40,7 @@ class InstrumentedBot(Bot):
         self.counts['mech_los'] += bool(visible)
         self.counts['laser_charging'] += any(w and w.get('charge', 0) > 0 for w in me['weapons'])
         target = q.get('target')
+        action['profile_target'] = {'id': target[0]['id'], 'kind': target[0]['kind']} if target else {'kind': 'none'}
         gun_slot = next((i for i,w in enumerate(me['weapons']) if w and w['kind'] == 'gun'), None)
         if not target:
             self.counts['target_none'] += 1
