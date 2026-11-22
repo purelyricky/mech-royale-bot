@@ -340,7 +340,8 @@ class Bot:
         # In an established duel, preserve a firing lane rather than walking
         # toward an unrelated loot/zone point and repeatedly turning away.
         duelists = []
-        if me['in_zone'] and me['hp'] > .55 * me['max_hp']:
+        loot_near = any(distance(me['pos'], c['pos']) < 24 for c in obs['cubes'])
+        if me['in_zone'] and me['hp'] > .75 * me['max_hp'] and self.goal_kind in ('zone', 'engage') and not loot_near:
             origin = [x, y, z + stats.get('muzzle_height', 7.)]
             for enemy in obs['mechs']:
                 d = distance(me['pos'], enemy['pos'])
