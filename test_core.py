@@ -223,6 +223,25 @@ class Semantics(unittest.TestCase):
         self.assertFalse(partial)
         self.assertAlmostEqual(point[2], 18.4)
 
+    def test_healthy_duel_can_step_into_a_firing_lane_but_hurt_mech_keeps_cover(self):
+        bot = Bot(HELLO)
+        bot.arena.walk_clear = lambda *args: True
+        bot.arena.line_clear = lambda origin, target: origin[1] > 4
+        obs = copy.deepcopy(OBSERVATIONS[0])
+        me = obs['self']
+        me.update(pos=[0., 0., 0.], vel=[0., 0., 0.], in_zone=True, grounded=True, hp=me['max_hp'])
+        obs['zone'].update(center=[0., 0.], next_center=[0., 0.], radius=300., next_radius=300.)
+        obs['projectiles'] = []
+        enemy = dict(id=100, kind='mech', pos=[80., 0., 0.], vel=[0., 0., 0.], aim=[math.pi, 0.], hp=1400., cubes=0, weapons=['gun'], weight=1.)
+        obs['mechs'], bot.threats = [enemy], [enemy]
+        bot.hostile_until[100] = obs['t'] + 3
+        healthy = bot.movement(obs, [100., 0.])[0]
+        me['hp'] = .5 * me['max_hp']
+        bot.previous_move = (0., 0.)
+        hurt = bot.movement(obs, [100., 0.])[0]
+        self.assertGreater(healthy[1], .4)
+        self.assertLessEqual(hurt[1], 0.)
+
     def test_tall_mech_routes_around_bridge_that_small_mech_can_use(self):
         arena = object.__new__(Arena)
         arena.valid, arena.terrain, arena.ring_rows, arena.nav_cache = True, [], {}, {}

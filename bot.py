@@ -343,6 +343,13 @@ class Bot:
         directions = [(wanted[0] * arrival_speed, wanted[1] * arrival_speed), self.previous_move, (0., 0.)]
         directions += [(math.cos(k * math.tau / 24), math.sin(k * math.tau / 24)) for offset in range(3) for k in range(offset, 24, 3)]
         close = [e for e in self.threats if distance(e['pos'], (x, y)) < 130]
+        duel = [e for e in self.threats if e['kind'] == 'mech' and distance(e['pos'], me['pos']) < 150 and self.hostile_until.get(e['id'], -1) > now]
+        expose = bool(me['in_zone'] and me['hp'] > .7 * me['max_hp'] and len(duel) == 1 and sum(e['kind'] == 'mech' and distance(e['pos'], me['pos']) < 90 for e in self.threats) <= 1)
+        firing_point = None
+        if expose:
+            enemy = duel[0]
+            scale = 1 + self.config['cubes'].get('size_per_cube', .05) * enemy.get('cubes', 0)
+            firing_point = [*enemy['pos'][:2], enemy['pos'][2] + self.config['mech']['height'] * scale * .5]
         ranked = []
         for ux, uy in directions:
             if len(ranked) >= 7 and time.perf_counter() > self.deadline - .005:
@@ -390,6 +397,9 @@ class Bot:
                 break
             if close:
                 score += (self.risk((px, py), now, cover=True, z=z) - self.risk((px, py), now)) * 1.5
+            if firing_point is not None:
+                if not self.arena.line_clear([px, py, z + stats.get('muzzle_height', 7.)], firing_point):
+                    score += 4.
             if best is None or score < best[0]:
                 best = score, ux, uy
         move = best[1:] if best else wanted
