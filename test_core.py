@@ -1,0 +1,109 @@
+"""Semantic and workload checks; run with `python test_core.py KIT_DIRECTORY`."""
+import copy
+import gzip
+import json
+import math
+from pathlib import Path
+import statistics
+import sys
+import time
+import unittest
+
+from arena import Arena
+from bot import Bot, angle_delta, future_circle, intercept
+
+
+KIT = Path(sys.argv[1] if len(sys.argv) > 1 else 'C:/Users/Window/Downloads/kit/x/mechfight-kit')
+with gzip.open(KIT / 'check/stream.jsonl.gz', 'rt') as stream:
+    MESSAGES = [json.loads(line) for line in stream]
+HELLO = MESSAGES[0]
+HELLO['map']['dir'] = str(KIT / 'arena')
+OBSERVATIONS = [m for m in MESSAGES if m['type'] == 'obs']
+
+
+class Semantics(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.bot = Bot(HELLO)
+
+    def test_intercept_hits_moving_target(self):
+        for v in ([12., -5., 0.], [-10., 12., 8.], [0., 0., 0.]):
+            p = [120., 30., 4.5]
+            o = [0., 0., 7.]
+            q = intercept(o, p, v, 252.)
+            t = math.dist(o, q) / 252.
+            self.assertLess(math.dist(q, [p[i] + v[i] * t for i in range(3)]), 1e-6)
+
+    def test_zone_prediction_before_and_during_shrink(self):
+        z = dict(center=[0., 0.], radius=100., next_center=[10., 10.], next_radius=50., shrink_start=10., shrink_end=20.)
+        self.assertEqual(future_circle(z, 0, 5), (0., 0., 100.))
+        self.assertEqual(future_circle(z, 0, 15), (5., 5., 75.))
+        z.update(center=[5., 5.], radius=75.)
+        self.assertEqual(future_circle(z, 15, 20), (10., 10., 50.))
+
+    def test_all_recorded_actions_finite_and_bounded(self):
+        for obs in OBSERVATIONS:
+            action = self.bot.act(obs)
+            self.assertLessEqual(math.hypot(*action['move']), 1.00001)
+            self.assertTrue(all(math.isfinite(v) for v in action['aim']))
+            self.assertEqual(len(action['fire']), 2)
+            self.assertTrue(all(isinstance(v, bool) for v in action['fire']))
+
+    def test_prism_los_and_hole(self):
+        a = object.__new__(Arena)
+        a.valid, a.terrain, a.buckets = True, [], {}
+        ring = [0., 0., 20., 0., 20., 20., 0., 20.]
+        hole = [5., 5., 15., 5., 15., 15., 5., 15.]
+        edges = [(r[i - 2], r[i - 1], r[i], r[i + 1]) for r in (ring, hole) for i in range(0, len(r), 2)]
+        a.prisms = [(10., 20., [ring, hole], edges, (0., 20., 0., 20.))]
+        a.buckets = {(0, 0): [0]}
+        self.assertTrue(a.line_clear([-10, 10, 5], [30, 10, 5]), 'below bridge')
+        self.assertFalse(a.line_clear([-10, 10, 15], [30, 10, 15]), 'through bridge solid')
+        self.assertTrue(a.line_clear([7, 7, 15], [13, 13, 15]), 'courtyard hole')
+        self.assertTrue(a.line_clear([-10, 10, 25], [30, 10, 25]), 'above roof')
+        self.assertFalse(a.line_clear([2, 2, 5], [2, 2, 25]), 'vertical through slab')
+
+    def test_gun_does_not_fire_before_aim_slews(self):
+        obs = copy.deepcopy(OBSERVATIONS[0])
+        obs['mechs'] = [dict(id=1, kind='mech', pos=[obs['self']['pos'][0] + 35, obs['self']['pos'][1], obs['self']['pos'][2]], vel=[0., 0., 0.], aim=[math.pi, 0.], hp=1400, cubes=0, weapons=['gun'])]
+        self.bot.arena.line_clear = lambda a, b: True
+        obs['self']['aim'] = [math.pi, 0.]
+        act = {}
+        self.bot.shooting(obs, act)
+        self.assertFalse(act['fire'][0])
+        obs['self']['aim'] = act['aim']
+        act = {}
+        self.bot.shooting(obs, act)
+        self.assertTrue(act['fire'][0])
+        del self.bot.arena.line_clear
+
+
+def workload():
+    bot = Bot(HELLO)
+    obs = copy.deepcopy(OBSERVATIONS[0])
+    obs['self']['pos'] = [0., 0., bot.arena.ground(0, 0)]
+    obs['zone']['next_center'] = [200., 150.]
+    obs['zone']['next_radius'] = 70.
+    obs['zone']['shrink_start'] = 0.
+    obs['zone']['shrink_end'] = 25.
+    for k in range(15):
+        yaw = k * math.tau / 15
+        x, y = 65 * math.cos(yaw), 65 * math.sin(yaw)
+        obs['mechs'].append(dict(id=k, kind='mech', pos=[x, y, bot.arena.ground(x, y)], vel=[-7 * math.sin(yaw), 7 * math.cos(yaw), 0.], aim=[yaw + math.pi, 0.], hp=1400, cubes=5, weapons=['gun', 'laser'], charging=k % 3 == 0))
+    for k in range(24):
+        yaw = k * math.tau / 24
+        obs['projectiles'].append(dict(id=k, kind='gun', pos=[30 * math.cos(yaw), 30 * math.sin(yaw), 5.], vel=[-252 * math.cos(yaw), -252 * math.sin(yaw), 0.]))
+    times = []
+    for k in range(200):
+        obs['t'], obs['tick'] = k * .1, k * 2
+        start = time.perf_counter()
+        bot.act(obs)
+        times.append((time.perf_counter() - start) * 1000)
+    times.sort()
+    print('Crowded decision time ms:', dict(p50=round(statistics.median(times), 2), p99=round(times[int(len(times)*.99)], 2), maximum=round(max(times), 2)))
+
+
+if __name__ == '__main__':
+    result = unittest.TextTestRunner(verbosity=2).run(unittest.defaultTestLoader.loadTestsFromTestCase(Semantics))
+    workload()
+    sys.exit(not result.wasSuccessful())
