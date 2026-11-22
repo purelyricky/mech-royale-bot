@@ -213,6 +213,7 @@ class Bot:
         def reachable_item(item):
             return abs(item['pos'][2] - self.arena.ground(*item['pos'][:2])) < 4 or (roof and abs(item['pos'][2] - pos[2]) < 4)
         healthy = me['hp'] > me['max_hp'] * .72
+        lightning = next((w for w in me['weapons'] if w and w['kind'] == 'lightning'), None)
         close_mechs = [e for e in self.threats if e['kind'] == 'mech' and distance(pos, e['pos']) < 140]
         if healthy and len(close_mechs) <= 1:
             for enemy in obs['mechs']:
@@ -220,7 +221,8 @@ class Bot:
                 if d > 220 or enemy.get('hp', 1) <= 0:
                     continue
                 npc = enemy['kind'] == 'npc'
-                if not npc and enemy.get('hp', 1400) > 450:
+                shorting = bool(lightning and me['energy'] > 30 and not npc and 'laser' in enemy.get('weapons', []) and 'lightning' not in enemy.get('weapons', []) and self.hostile_until.get(enemy['id'], -1) > now and d < 130)
+                if not npc and enemy.get('hp', 1400) > 450 and not shorting:
                     continue
                 if self.ffa and obs['alive'] > 6 and not npc and enemy.get('hp', 1400) > 250:
                     continue
@@ -231,9 +233,13 @@ class Bot:
                     continue
                 # Approach isolated enemies while healthy, then strafe at a useful gun range.
                 standoff = 42. if npc else (85. if 'lightning' in enemy.get('weapons', []) else 75.)
+                if shorting:
+                    standoff = .82 * self.weapon_stats(lightning)['range']
                 ux, uy = unit(pos[0] - enemy['pos'][0], pos[1] - enemy['pos'][1])
                 point = enemy['pos'][0] + ux * standoff, enemy['pos'][1] + uy * standoff
                 reward = -4. if npc else -5. - max(0., 800 - enemy.get('hp', 1400)) * .004
+                if shorting:
+                    reward = -10.
                 candidates.append((point, 'engage', enemy['id'], reward))
         # Resources are deliberately local; crossing the map to chase a cube is rarely safe.
         cube_items = [item for _, item in self.items['cubes'].values()]

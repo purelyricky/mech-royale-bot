@@ -223,6 +223,27 @@ class Semantics(unittest.TestCase):
         self.assertFalse(partial)
         self.assertAlmostEqual(point[2], 18.4)
 
+    def test_lightning_counter_only_approaches_confirmed_isolated_laser(self):
+        bot = Bot(HELLO)
+        bot.arena.clear_at = lambda *args, **kwargs: True
+        bot.arena.line_clear = lambda *args: True
+        bot.arena.ground = lambda *args: 0.
+        obs = copy.deepcopy(OBSERVATIONS[0])
+        me = obs['self']
+        me.update(pos=[0., 0., 0.], vel=[0., 0., 0.], in_zone=True, grounded=True, hp=me['max_hp'], energy=me['max_energy'])
+        me['weapons'][1] = dict(kind='lightning', cooldown=0., stats=HELLO['config']['weapons']['lightning'])
+        obs['zone'].update(center=[0., 0.], next_center=[0., 0.], radius=300., next_radius=300.)
+        obs.update(cubes=[], pickups=[], crates=[], drops=[])
+        enemy = dict(id=100, kind='mech', pos=[80., 0., 0.], vel=[0., 0., 0.], aim=[math.pi, 0.], hp=1400., cubes=0, weapons=['gun', 'laser'], weight=1.)
+        obs['mechs'], bot.threats = [enemy], [enemy]
+        bot.select_goal(obs)
+        self.assertNotEqual(bot.goal_kind, 'engage')
+        bot.hostile_until[100] = obs['t'] + 3
+        bot.goal, bot.goal_until = None, -1.
+        bot.select_goal(obs)
+        self.assertEqual(bot.goal_kind, 'engage')
+        self.assertAlmostEqual(math.dist(bot.goal, enemy['pos'][:2]), .82 * HELLO['config']['weapons']['lightning']['range'])
+
     def test_tall_mech_routes_around_bridge_that_small_mech_can_use(self):
         arena = object.__new__(Arena)
         arena.valid, arena.terrain, arena.ring_rows, arena.nav_cache = True, [], {}, {}
