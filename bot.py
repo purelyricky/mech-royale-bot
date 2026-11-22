@@ -239,7 +239,7 @@ class Bot:
         cube_items = [item for _, item in self.items['cubes'].values()]
         for cube in cube_items:
             d = distance(pos, cube['pos'])
-            if d < 110 and reachable_item(cube):
+            if d < 75 and reachable_item(cube):
                 count = sum(1 for other in cube_items if distance(cube['pos'], other['pos']) < 8 and abs(cube['pos'][2] - other['pos'][2]) < 4)
                 useful = min(count, max(0, 10 - me['cubes']))
                 value = min(22., 5. + useful * 3.) if useful else 1.
@@ -247,7 +247,7 @@ class Bot:
         held = {w['kind'] for w in me['weapons'] if w}
         for _, pickup in self.items['pickups'].values():
             d = distance(pos, pickup['pos'])
-            if d < 190 and pickup['kind'] not in held and reachable_item(pickup):
+            if d < 120 and pickup['kind'] not in held and reachable_item(pickup):
                 value = {'laser': 12., 'lightning': 4., 'mortar': 0., 'gun': 0.}.get(pickup['kind'], 0)
                 if len(held) >= 2:
                     value = max(0., value - 4)
@@ -256,11 +256,11 @@ class Bot:
         if not hunter_near and me['hp'] > me['max_hp'] * .75 and me['cubes'] < 10:
             for _, crate in self.items['crates'].values():
                 d = distance(pos, crate['pos'])
-                if d < 95 and reachable_item(crate):
+                if d < 65 and reachable_item(crate):
                     candidates.append((crate['pos'][:2], 'crate', crate['id'], -6. / (1 + d / 80)))
             for npc in obs['mechs']:
                 d = distance(pos, npc['pos'])
-                if npc['kind'] == 'npc' and d < 110 and reachable_item(npc):
+                if npc['kind'] == 'npc' and d < 75 and reachable_item(npc):
                     ux, uy = unit(pos[0] - npc['pos'][0], pos[1] - npc['pos'][1])
                     point = npc['pos'][0] + ux * 55, npc['pos'][1] + uy * 55
                     candidates.append((point, 'farm', npc['id'], -8. / (1 + d / 110)))
