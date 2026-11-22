@@ -450,9 +450,12 @@ class Bot:
             d = distance(pos, actor['pos'])
             if actor['kind'] == 'npc':
                 danger = any(e['kind'] == 'mech' and (distance(pos, e['pos']) < (150 if self.ffa else 60) or (self.hostile_until.get(e['id'], -1) > now and distance(pos, e['pos']) < 110)) for e in self.threats)
-                if d > 95 or me['hp'] < .75 * me['max_hp'] or danger:
+                nearby = [e for e in self.threats if e['kind'] == 'mech' and distance(pos, e['pos']) < 100]
+                finishable = any(e['kind'] == 'mech' and e.get('hp', 1400) <= 400 and distance(pos, e['pos']) < 120 for e in obs['mechs'])
+                quick_farm = bool(d < 50 and me['cubes'] < 6 and me['hp'] > .6 * me['max_hp'] and sum(self.hostile_until.get(e['id'], -1) > now for e in nearby) <= 1 and not any(distance(pos, e['pos']) < 45 for e in nearby) and not finishable)
+                if not quick_farm and (d > 95 or me['hp'] < .75 * me['max_hp'] or danger):
                     continue
-                score = d * .5 + 30 if self.goal_kind == 'farm' and actor['id'] == self.goal_id else d + 65
+                score = d * .5 + 10 if quick_farm else d * .5 + 30 if self.goal_kind == 'farm' and actor['id'] == self.goal_id else d + 65
             else:
                 hostile = self.hostile_until.get(actor['id'], -1) > now
                 if not self.ffa and not hostile and d > 46 and actor.get('hp', 1400) > 400:
