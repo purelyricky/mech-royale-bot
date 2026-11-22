@@ -39,6 +39,12 @@ def main():
     print('Individual phases', json.dumps(phases))
     shots = [s for g in games for s in g.get('shotLog', [])]
     print('Shot summary', json.dumps(dict(n=len(shots), hit_fraction=round(statistics.mean(s[0] for s in shots), 3) if shots else None, median_initial_range=statistics.median(s[3] for s in shots) if shots else None, mean_target_speed=round(statistics.mean(s[4] for s in shots), 2) if shots else None)))
+    for label, col, edges in [('initial_range', 3, [0,40,70,100,140,10000]), ('target_speed', 4, [0,2,7,12,1000]), ('velocity_change_in_flight', 2, [0,2,5,10,1000])]:
+        bins = {}
+        for low,high in zip(edges,edges[1:]):
+            group = [s for s in shots if low <= s[col] < high]
+            bins[f'{low}-{high}'] = dict(n=len(group), hit_pct=round(100*statistics.mean(s[0] for s in group),1) if group else None)
+        print('Shot bins', label, json.dumps(bins))
     for g in sorted(games, key=lambda g: (g['phase_summary']['score'], g['deathT']))[:2]:
         print('Poor-match phases [t,speed,roof,seen_by,nearest,recent_attackers,nearby,hp,kills,loadout,taken,dealt]', g['phase_summary']['seed'], json.dumps([r for i,r in enumerate(g['plog']) if i % 100 == 0]))
 
