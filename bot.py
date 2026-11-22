@@ -50,6 +50,7 @@ def future_circle(zone, now, future):
 
 class Bot:
     name = 'Oval Sentinel'
+    use_jets = False
 
     def __init__(self, hello):
         self.config = hello['config']
@@ -171,7 +172,12 @@ class Bot:
         candidates = [(pos[:2], 'zone', None, 0.)]
         if self.goal is not None:
             reward = -2.4 if self.goal_kind == 'explore' and distance(pos, self.goal) > 8 else -.35
-            candidates.append((self.goal, self.goal_kind, self.goal_id, reward))
+            table = {'cube': 'cubes', 'weapon': 'pickups', 'crate': 'crates'}.get(self.goal_kind)
+            valid = table is None or self.goal_id in self.items[table]
+            if self.goal_kind == 'drop':
+                valid = any(d['id'] == self.goal_id for d in obs.get('drops', []))
+            if valid:
+                candidates.append((self.goal, self.goal_kind, self.goal_id, reward))
         # Local alternatives preserve freedom rather than driving every spawn to the center.
         for r in (35., 80.):
             for k in range(12):
@@ -190,6 +196,10 @@ class Bot:
                 candidates.append(((zone['next_center'][0] + .65 * nr * math.cos(yaw), zone['next_center'][1] + .65 * nr * math.sin(yaw)), 'zone', None, 0.))
         nearest = distance(pos, self.threats[0]['pos']) if self.threats else 1e6
         peaceful = nearest > 90 and now - self.last_damage > 2
+        hunter_near = any(e['kind'] == 'mech' and (distance(pos, e['pos']) < 60 or (self.hostile_until.get(e['id'], -1) > now and distance(pos, e['pos']) < 110)) for e in self.threats)
+        roof = me['grounded'] and pos[2] > self.arena.ground(*pos[:2]) + 3
+        def reachable_item(item):
+            return abs(item['pos'][2] - self.arena.ground(*item['pos'][:2])) < 4 or (roof and abs(item['pos'][2] - pos[2]) < 4)
         healthy = me['hp'] > me['max_hp'] * .72
         close_mechs = [e for e in self.threats if e['kind'] == 'mech' and distance(pos, e['pos']) < 140]
         if healthy and len(close_mechs) <= 1:
@@ -212,32 +222,43 @@ class Bot:
                 reward = -4. if npc else -5. - max(0., 800 - enemy.get('hp', 1400)) * .004
                 candidates.append((point, 'engage', enemy['id'], reward))
         # Resources are deliberately local; crossing the map to chase a cube is rarely safe.
-        for _, cube in self.items['cubes'].values():
+        cube_items = [item for _, item in self.items['cubes'].values()]
+        for cube in cube_items:
             d = distance(pos, cube['pos'])
-            if d < 85 and abs(cube['pos'][2] - self.arena.ground(*cube['pos'][:2])) < 4:
-                candidates.append((cube['pos'][:2], 'cube', cube['id'], -6.5 / (1 + d / 50)))
+            if d < 110 and reachable_item(cube):
+                count = sum(1 for other in cube_items if distance(cube['pos'], other['pos']) < 8 and abs(cube['pos'][2] - other['pos'][2]) < 4)
+                useful = min(count, max(0, 10 - me['cubes']))
+                value = min(22., 5. + useful * 3.) if useful else 1.
+                candidates.append((cube['pos'][:2], 'cube', cube['id'], -value / (1 + d / 90)))
         held = {w['kind'] for w in me['weapons'] if w}
         for _, pickup in self.items['pickups'].values():
             d = distance(pos, pickup['pos'])
-            if d < 160 and pickup['kind'] not in held and abs(pickup['pos'][2] - self.arena.ground(*pickup['pos'][:2])) < 4:
+            if d < 190 and pickup['kind'] not in held and reachable_item(pickup):
                 value = {'laser': 12., 'lightning': 4., 'mortar': 0., 'gun': 0.}.get(pickup['kind'], 0)
                 if len(held) >= 2:
                     value = max(0., value - 4)
                 if value:
                     candidates.append((pickup['pos'][:2], 'weapon', pickup['id'], -value / (1 + d / 100)))
-        if peaceful and me['hp'] > me['max_hp'] * .7:
-            for crate in obs['crates']:
+        if not hunter_near and me['hp'] > me['max_hp'] * .75 and me['cubes'] < 10:
+            for _, crate in self.items['crates'].values():
                 d = distance(pos, crate['pos'])
-                if d < 70 and abs(crate['pos'][2] - self.arena.ground(*crate['pos'][:2])) < 4:
-                    candidates.append((crate['pos'][:2], 'crate', crate['id'], -3. / (1 + d / 50)))
+                if d < 95 and reachable_item(crate):
+                    candidates.append((crate['pos'][:2], 'crate', crate['id'], -6. / (1 + d / 80)))
+            for npc in obs['mechs']:
+                d = distance(pos, npc['pos'])
+                if npc['kind'] == 'npc' and d < 110 and reachable_item(npc):
+                    ux, uy = unit(pos[0] - npc['pos'][0], pos[1] - npc['pos'][1])
+                    point = npc['pos'][0] + ux * 55, npc['pos'][1] + uy * 55
+                    candidates.append((point, 'farm', npc['id'], -8. / (1 + d / 110)))
         for drop in obs.get('drops', []):
             d = distance(pos, drop['pos'])
-            if d < 160 and drop.get('lands_in', 0) < max(8., d / speed) and (drop.get('holder') in (None, me['id'])):
-                value = 5. + (1 - me['hp'] / me['max_hp']) * 10
-                candidates.append((drop['pos'][:2], 'drop', drop['id'], -value / (1 + d / 130)))
+            occupied = any(e['kind'] == 'mech' and distance(e['pos'], drop['pos']) < drop.get('radius', 8) + 3 for e in self.threats)
+            if d < 280 and drop.get('lands_in', 0) < max(8., d / speed * 1.35) and (drop.get('holder') in (None, me['id'])) and not occupied:
+                value = 12. + (1 - me['hp'] / me['max_hp']) * 16
+                candidates.append((drop['pos'][:2], 'drop', drop['id'], -value / (1 + d / 180)))
         ranked = []
         for point, kind, idx, reward in candidates:
-            if not self.arena.clear_at(*point):
+            if not self.arena.clear_at(*point) and not (roof and distance(pos, point) < 90 and self.arena.clear_at(point[0], point[1], pos[2])):
                 continue
             d = distance(pos, point)
             travel = d / max(1., speed)
@@ -389,9 +410,10 @@ class Bot:
                 break
             d = distance(pos, actor['pos'])
             if actor['kind'] == 'npc':
-                if d > 75 or me['hp'] < .85 * me['max_hp'] or any(e['kind'] == 'mech' and distance(pos, e['pos']) < 150 for e in self.threats):
+                danger = any(e['kind'] == 'mech' and (distance(pos, e['pos']) < 60 or (self.hostile_until.get(e['id'], -1) > now and distance(pos, e['pos']) < 110)) for e in self.threats)
+                if d > 95 or me['hp'] < .75 * me['max_hp'] or danger:
                     continue
-                score = d + 65
+                score = d * .5 + 30 if self.goal_kind == 'farm' and actor['id'] == self.goal_id else d + 65
             else:
                 hostile = self.hostile_until.get(actor['id'], -1) > now
                 if not hostile and d > 46 and actor.get('hp', 1400) > 400:
@@ -404,10 +426,10 @@ class Bot:
         if candidates:
             target = min(candidates, key=lambda c: c[0])[1:]
         # Don't aggro distant drones or keep resetting regen for a crate while hurt.
-        if target is None and me['hp'] >= .85 * me['max_hp'] and now - self.last_damage > 3:
+        if target is None and me['hp'] >= .8 * me['max_hp'] and now - self.last_damage > 1.5:
             crates = sorted(obs['crates'], key=lambda c: distance(pos, c['pos']))
             for crate in crates[:3]:
-                if distance(pos, crate['pos']) < 75 and (self.goal_kind == 'crate' or distance(pos, crate['pos']) < 22):
+                if distance(pos, crate['pos']) < 95 and (self.goal_kind == 'crate' or distance(pos, crate['pos']) < 22):
                     point = [crate['pos'][0], crate['pos'][1], crate['pos'][2] + self.config['crates']['height'] * .5]
                     if self.arena.line_clear(origin, point):
                         target = (dict(crate, kind='crate', vel=[0., 0., 0.]), point)
@@ -486,7 +508,7 @@ class Bot:
                 if relevant:
                     action['aim'] = [min(relevant, key=lambda s: ({'near': 0, 'mid': 1, 'far': 2}[s['dist']], s['age']))['bearing'], 0.]
             if 'aim' not in action:
-                if self.goal_kind in ('weapon', 'crate', 'cube'):
+                if self.goal_kind in ('weapon', 'crate', 'cube', 'farm'):
                     action['aim'] = [math.atan2(self.goal[1] - pos[1], self.goal[0] - pos[0]), 0.]
                 else:
                     # A slow periodic full sweep detects loot outside the forward wedge.
@@ -505,21 +527,30 @@ class Bot:
         waypoint = self.waypoint(obs)
         move, boost, jump = self.movement(obs, waypoint)
         action = {'tick': obs['tick'], 'move': move, 'boost': boost, 'jump': jump}
+        capturing = False
+        for drop in obs.get('drops', []):
+            occupied = any(e['kind'] == 'mech' and distance(e['pos'], drop['pos']) < drop.get('radius', 8) + 1 for e in self.threats)
+            if drop.get('lands_in', 0) <= .1 and distance(me['pos'], drop['pos']) < drop.get('radius', 8) - 2 and abs(me['pos'][2] - drop['pos'][2]) < 20 and not occupied:
+                action.update(move=[0., 0.], boost=False, jump=False)
+                capturing = True
+                break
         hostile = any(e['kind'] == 'mech' and self.hostile_until.get(e['id'], -1) > now and distance(e['pos'], me['pos']) < 160 for e in self.threats)
         stats = me['stats']
-        if me['grounded'] and hostile and now >= self.jet_cooldown and me['energy'] > me['max_energy'] * .65:
+        if self.use_jets and not capturing and me['grounded'] and hostile and now >= self.jet_cooldown and me['energy'] > me['max_energy'] * .65:
             eye = [me['pos'][0], me['pos'][1], me['pos'][2] + stats.get('height', 9) + .5]
             overhead = [eye[0], eye[1], eye[2] + 18]
             if self.arena.line_clear(eye, overhead):
                 self.jet_started, self.jet_cooldown = now, now + 5.5
                 self.jet_altitude = me['pos'][2] + 14.
                 action.update(jump=True, boost=True)
-        elif not me['grounded'] and now - self.jet_started < 5.5:
+        elif self.use_jets and not capturing and not me['grounded'] and now - self.jet_started < 5.5:
             action['boost'] = bool(now - self.jet_started < 1.7 and me['pos'][2] < self.jet_altitude and me['energy'] > 25)
         self.shooting(obs, action)
         offer = obs.get('offer')
         if offer:
             priorities = {'nanites': 100, 'armor': 96, 'plating': 94, 'servos': 92, 'reactor': 84, 'jets': 80, 'laser_damage': 78, 'laser_charge': 76, 'gun_damage': 72, 'gun_rate': 70, 'gun_mag': 68, 'capacitor': 66, 'gun_velocity': 64, 'lightning_range': 62, 'lightning_efficiency': 60, 'sensors': 52, 'gyros': 48}
+            if me['cubes'] < 6:
+                priorities.update(laser_damage=118, gun_damage=114, laser_charge=112, gun_rate=110, gun_mag=108, servos=104)
             action['pick'] = max(range(len(offer['choices'])), key=lambda i: priorities.get(offer['choices'][i]['id'], 20))
         held = {w['kind'] for w in me['weapons'] if w}
         reach = self.config['loot']['pickup_radius']
