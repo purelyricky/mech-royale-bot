@@ -520,7 +520,7 @@ class Bot:
                     gun_pitch = math.atan2(gun_point[2] - origin[2], distance(pos, gun_point))
                     gun_aligned = abs(angle_delta(me['aim'][0], gun_yaw)) < tolerance + .025 and abs(me['aim'][1] - gun_pitch) < max(.03, tolerance)
                     fire[i] = bool(gun_aligned and d < ws['range'] - 3 and not abstain)
-                    if not fire[i] and w.get('ammo', 12) < ws['mag'] * .65 and not w.get('reload', 0):
+                    if not fire[i] and w.get('ammo', 12) <= 2 and not w.get('reload', 0):
                         action['reload'] = True
                 elif kind == 'laser':
                     full = desired_charge
