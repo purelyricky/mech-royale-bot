@@ -86,6 +86,12 @@ class Bot:
         self.orbit = self.rng.choice((-1, 1))
         self.scan_phase = self.rng.uniform(-math.pi, math.pi)
         self.deadline = math.inf
+        self.healing = False
+        self.hidden_now = False
+        self.last_kill = -100.
+        self.last_attacker = None
+        self.last_damage_bearing = None
+        self.recover_sprint = False
 
     def remember(self, obs):
         now = obs['t']
@@ -133,13 +139,21 @@ class Bot:
             if event['type'] == 'damaged':
                 self.last_damage = now
                 self.last_combat = now
+                if event.get('bearing') is not None:
+                    self.last_damage_bearing = event['bearing']
                 if event.get('by') is not None:
                     self.hostile_until[event['by']] = now + 12
+                    self.last_attacker = event['by']
             elif event['type'] == 'hit':
                 self.last_combat = now
             elif event['type'] == 'kill':
                 self.memory.pop(event['target'], None)
+                self.threats = [e for e in self.threats if e['id'] != event['target']]
                 self.own_kills.add(event['target'])
+                self.last_kill = now
+                if self.last_attacker == event['target']:
+                    self.last_attacker = None
+                    self.last_damage_bearing = None
         foreign_deaths = max(0, self.initial_players - obs['alive'] - len(self.own_kills))
         if (now < 100 and foreign_deaths >= 4) or (now < 180 and foreign_deaths >= 6):
             self.ffa = True
@@ -178,6 +192,8 @@ class Bot:
         return outside * .18 + outside * outside * .012
 
     def select_goal(self, obs):
+        if self.healing and self.recovery_goal(obs):
+            return
         me, now, zone = obs['self'], obs['t'], obs['zone']
         pos = me['pos']
         speed = me['stats'].get('walk_speed', 11.7)
@@ -330,6 +346,127 @@ class Bot:
                 break
         return self.route[0] if self.route else self.goal
 
+    def principal_threats(self, obs):
+        pos, now = obs['self']['pos'], obs['t']
+        actors = [e for e in self.threats if e['kind'] == 'mech' and (self.hostile_until.get(e['id'], -1) > now or distance(pos,e['pos']) < 90)]
+        if now-self.last_damage<3 and self.last_damage_bearing is not None and not any(e['id']==self.last_attacker for e in actors):
+            yaw = self.last_damage_bearing
+            actors.append(dict(id=self.last_attacker,kind='mech',pos=[pos[0]+80*math.cos(yaw),pos[1]+80*math.sin(yaw),pos[2]],vel=[0.,0.,0.],weight=1.,estimated=True))
+        actors.sort(key=lambda e: (0 if e['id'] == self.last_attacker else 1, distance(pos,e['pos'])))
+        return actors[:4] or self.threats[:2]
+
+    def exposure(self, point, obs, enemies):
+        height = obs['self']['stats'].get('height', 9.)
+        body = [point[0], point[1], point[2] + height * .5]
+        total = 0.
+        for enemy in enemies:
+            scale = 1 + .05 * enemy.get('cubes', 0)
+            eye = [enemy['pos'][0], enemy['pos'][1], enemy['pos'][2] + (7 if enemy['kind'] == 'mech' else 2) * scale]
+            weight = enemy.get('weight', 1.) * 200 / (distance(point, enemy['pos']) + 50)
+            if self.arena.line_clear(eye, body):
+                total += weight
+            future = [eye[j] + enemy.get('vel',[0,0,0])[j] * .65 for j in range(3)]
+            if self.arena.line_clear(future, body):
+                total += weight * .4
+        return total
+
+    def recovery_goal(self, obs):
+        me, now = obs['self'], obs['t']
+        pos, stats = me['pos'], me['stats']
+        enemies = self.principal_threats(obs)
+        unknown_attacker = any(e.get('estimated') for e in enemies)
+        current_exposure = self.exposure(pos, obs, enemies)
+        self.hidden_now = current_exposure < .05 and not unknown_attacker
+        if self.hidden_now and self.zone_cost(pos, obs, 12) < .5:
+            self.goal, self.goal_kind, self.goal_id = tuple(pos[:2]), 'recover', None
+            self.goal_until = now + .4
+            self.route = []
+            return True
+        options = []
+        for r in (0., 18., 38., 65.):
+            for k in range(1 if r == 0 else 16):
+                yaw = self.scan_phase + k * math.tau / 16
+                point = (pos[0] + r*math.cos(yaw), pos[1] + r*math.sin(yaw))
+                z = self.arena.ground(*point)
+                if r == 0:
+                    z = pos[2]
+                if not self.arena.clear_at(*point, z, stats.get('radius',2.5)+.25, stats.get('height',9.)):
+                    continue
+                travel = r / max(1.,stats.get('walk_speed',11.7))
+                zone = self.zone_cost(point,obs,travel+10)
+                score = zone*3 + self.risk(point,now)*.6 + r*.015
+                if unknown_attacker:
+                    score += .08*((point[0]-pos[0])*math.cos(self.last_damage_bearing)+(point[1]-pos[1])*math.sin(self.last_damage_bearing))
+                    if r < 3:
+                        score += 5.
+                options.append((score, (point[0],point[1],z)))
+        options.sort(key=lambda p:p[0])
+        best = None
+        for score,point in options[:16]:
+            if best is not None and time.perf_counter() > self.deadline-.015:
+                break
+            score += self.exposure(point,obs,enemies)*5
+            if best is None or score < best[0]:
+                best = score,point
+        if best is None:
+            return False
+        self.goal, self.goal_kind, self.goal_id = tuple(best[1][:2]), 'recover', None
+        self.goal_until = now+.55
+        return True
+
+    def motion_samples(self, me, command, speed):
+        x,y,z = me['pos']
+        vx,vy,vz = me['vel']
+        accel = me['stats'].get('ground_accel',58.5) if me['grounded'] else me['stats'].get('air_accel',12.)
+        target_x,target_y = command[0]*speed,command[1]*speed
+        follows_ground = me['grounded'] and abs(z-self.arena.ground(*me['pos'][:2])) < 3
+        samples = [(0.,x,y,z)]
+        for k in range(1,13):
+            dx,dy = target_x-vx,target_y-vy
+            delta = math.hypot(dx,dy)
+            factor = min(1.,accel*.05/max(.0001,delta))
+            vx,vy = vx+dx*factor,vy+dy*factor
+            x,y = x+vx*.05,y+vy*.05
+            t = k*.05
+            feet = self.arena.ground(x,y) if follows_ground else z+vz*t-.5*me['stats'].get('gravity',22.)*t*t if not me['grounded'] else z
+            if not me['grounded']:
+                feet = max(feet,self.arena.ground(x,y))
+            samples.append((t,x,y,feet))
+        return samples
+
+    def projectile_cost(self, samples, projectiles, radius, height):
+        total = 0.
+        for p in projectiles:
+            mortar = p['kind'] == 'mortar'
+            rr = radius + (7. if mortar else self.config.get('projectile',{}).get('gun_radius',.3))
+            previous = None
+            worst = 0.
+            for t,x,y,z in samples:
+                projectile = [p['pos'][j]+p['vel'][j]*t for j in range(3)]
+                if mortar:
+                    projectile[2] -= .5*self.config['weapons']['mortar'].get('gravity',22.)*t*t
+                relative = (projectile[0]-x,projectile[1]-y,projectile[2]-z)
+                if previous is not None:
+                    old_t,old_rel,old_z = previous
+                    dx,dy = relative[0]-old_rel[0],relative[1]-old_rel[1]
+                    f = max(0.,min(1.,-(old_rel[0]*dx+old_rel[1]*dy)/max(.0001,dx*dx+dy*dy)))
+                    rx,ry = old_rel[0]+dx*f,old_rel[1]+dy*f
+                    rz = old_rel[2]+(relative[2]-old_rel[2])*f
+                    miss = math.hypot(rx,ry)
+                    if (-7 if mortar else -.3) <= rz <= height+(7 if mortar else .3) and miss < rr+1.2:
+                        hit_t = old_t+(t-old_t)*f
+                        if not mortar:
+                            hit_point = [p['pos'][j]+p['vel'][j]*hit_t for j in range(3)]
+                            if not self.arena.line_clear(p['pos'],hit_point):
+                                break
+                        worst = max(worst,min(1.,max(0.,(rr+1.2-miss)/1.2))**2)
+                        if worst >= .999:
+                            break
+                previous = t,relative,z
+            damage = 360 if mortar else self.config['npc'].get('damage',25) if p['kind'] == 'npc' else self.config['weapons']['gun']['damage']
+            total += worst*damage*.15
+        return total
+
     def movement(self, obs, waypoint):
         me, now = obs['self'], obs['t']
         x, y, z = me['pos']
@@ -337,22 +474,51 @@ class Bot:
         speed = stats.get('walk_speed', 11.7)
         radius = stats.get('radius', 2.5) + .25
         height = stats.get('height', 9.)
+        close = [e for e in self.threats if distance(e['pos'], (x, y)) < 130]
+        nearest = distance(me['pos'],close[0]['pos']) if close else 1e6
+        incoming = []
+        imminent = False
+        for p in obs['projectiles'][:24]:
+            rx,ry = p['pos'][0]-x,p['pos'][1]-y
+            vx,vy = p['vel'][0]-me['vel'][0],p['vel'][1]-me['vel'][1]
+            t = max(0.,min(.6,-(rx*vx+ry*vy)/max(1.,vx*vx+vy*vy)))
+            miss = math.hypot(rx+vx*t,ry+vy*t)
+            if miss < radius+14+(7 if p['kind']=='mortar' else 0):
+                incoming.append((t,p))
+                imminent |= t < .35 and miss < radius+1.5
+        incoming.sort(key=lambda q:q[0])
+        projectiles = [p for _,p in incoming[:12]]
+        energy = me['energy']
+        planned_boost = bool(me['grounded'] and energy>30 and (not me['in_zone'] or (nearest<85 and me['hp']<.8*me['max_hp'])))
+        if self.healing and not self.hidden_now and me['grounded']:
+            threshold = .30 if self.recover_sprint else .65
+            self.recover_sprint = energy > me['max_energy']*threshold
+            planned_boost = self.recover_sprint
+        else:
+            self.recover_sprint = False
+        if imminent and me['grounded'] and energy > me['max_energy']*.6:
+            planned_boost = True
+        if self.hidden_now and self.healing:
+            planned_boost = False
+        if planned_boost:
+            speed = stats.get('boost_speed',19.5)
+        if any(w and w.get('charge',0)>0 for w in me['weapons']):
+            speed *= stats.get('charge_move_mult',.5)
         wanted = unit(waypoint[0] - x, waypoint[1] - y)
         current_dist = distance((x, y), waypoint)
         arrival_speed = min(1., current_dist / max(1., speed * .85))
-        directions = [(wanted[0] * arrival_speed, wanted[1] * arrival_speed), self.previous_move, (0., 0.)]
-        directions += [(math.cos(k * math.tau / 24), math.sin(k * math.tau / 24)) for offset in range(3) for k in range(offset, 24, 3)]
-        close = [e for e in self.threats if distance(e['pos'], (x, y)) < 130]
+        directions = [(wanted[0] * arrival_speed, wanted[1] * arrival_speed), (0., 0.)]
+        directions += [(math.cos(k*math.tau/32),math.sin(k*math.tau/32)) for offset in range(8) for k in range(offset,32,8)]
         ranked = []
         for ux, uy in directions:
             if len(ranked) >= 7 and time.perf_counter() > self.deadline - .005:
                 break
-            horizon = .85
-            px = x + ux * speed * horizon + me['vel'][0] * .08
-            py = y + uy * speed * horizon + me['vel'][1] * .08
-            if not self.arena.walk_clear(me['pos'], (px, py), radius, height):
+            samples = self.motion_samples(me,(ux,uy),speed)
+            _,px,py,pz = samples[-1]
+            middle = samples[6][1:]
+            if not self.arena.walk_clear(me['pos'],middle,radius,height) or not self.arena.walk_clear(middle,(px,py,pz),radius,height):
                 continue
-            score = (distance((px, py), waypoint) - current_dist) * .14
+            score = (distance((px, py), waypoint) - current_dist) * (.07 if self.healing else .14)
             cx, cy, safe_radius = future_circle(obs['zone'], now, now + 1.8)
             # A route around a wall can initially lead away from the circle. A quadratic
             # local zone cost would pin us against the wall while the zone kills us.
@@ -369,37 +535,25 @@ class Bot:
                 if ux == 0 and uy == 0:
                     score += 1.2
             score += .1 * ((ux - self.previous_move[0]) ** 2 + (uy - self.previous_move[1]) ** 2)
-            # Dodge visible projectiles at their closest approach over the next half second.
-            for p in obs['projectiles'][:24]:
-                rx, ry = p['pos'][0] - x, p['pos'][1] - y
-                vx, vy = p['vel'][0] - ux * speed, p['vel'][1] - uy * speed
-                vv = vx * vx + vy * vy
-                t = max(0., min(.55, -(rx * vx + ry * vy) / max(1., vv)))
-                dx, dy = rx + vx * t, ry + vy * t
-                pz = p['pos'][2] + p['vel'][2] * t
-                if p['kind'] == 'mortar':
-                    pz -= .5 * self.config['weapons']['mortar'].get('gravity', 22) * t * t
-                if z - 1 <= pz <= z + height + 2 and t > .015:
-                    rr = radius + (7 if p['kind'] == 'mortar' else 1.2)
-                    score += max(0., rr * rr - dx * dx - dy * dy) * .18
-            ranked.append((score, ux, uy, px, py))
+            score += self.projectile_cost(samples,projectiles,radius,height)
+            ranked.append((score, ux, uy, px, py,pz))
         ranked.sort()
         best = None
-        for score, ux, uy, px, py in ranked[:5]:
+        for score, ux, uy, px, py,pz in ranked[:5]:
             if best is not None and time.perf_counter() > self.deadline - .005:
                 break
             if close:
-                score += (self.risk((px, py), now, cover=True, z=z) - self.risk((px, py), now)) * 1.5
+                score += (self.risk((px, py), now, cover=True, z=pz) - self.risk((px, py), now)) * (3 if self.healing else 1.5)
             if best is None or score < best[0]:
                 best = score, ux, uy
         move = best[1:] if best else wanted
         if current_dist < 3 and self.goal_kind in ('zone', 'drop') and not close:
             move = (0., 0.)
+        if self.healing and self.hidden_now and current_dist<3 and not projectiles:
+            move = (0.,0.)
         energy = me['energy']
         nearest = distance(me['pos'], close[0]['pos']) if close else 1e6
-        boost = me['grounded'] and energy > 30 and (not me['in_zone'] or (nearest < 85 and me['hp'] < .8 * me['max_hp']))
-        if me['in_zone'] and energy < me['max_energy'] * .38:
-            boost = False
+        boost = planned_boost
         # Stuck recovery is deliberate, not an unconditional jump every few seconds.
         self.last_positions.append((now, x, y))
         self.last_positions = [p for p in self.last_positions if now - p[0] < 1.4]
@@ -458,6 +612,10 @@ class Bot:
                 if not self.ffa and not hostile and d > 46 and actor.get('hp', 1400) > 400:
                     continue
                 score = d * .5 + actor.get('hp', 1400) * .075 - (18 if actor['id'] == self.focus_id else 0)
+                if now-self.last_damage<3 and self.last_damage_bearing is not None and actor.get('hp',1400)>350:
+                    bearing = math.atan2(actor['pos'][1]-pos[1],actor['pos'][0]-pos[0])
+                    if abs(angle_delta(bearing,self.last_damage_bearing)) > math.pi/2-.1:
+                        score += 120
                 aim_yaw = actor.get('aim', [0, 0])[0]
                 to_me = math.atan2(pos[1] - actor['pos'][1], pos[0] - actor['pos'][0])
                 if abs(angle_delta(aim_yaw, to_me)) > math.pi / 2:
@@ -571,6 +729,17 @@ class Bot:
         self.deadline = time.perf_counter() + .027
         me, now = obs['self'], obs['t']
         self.remember(obs)
+        was_healing = self.healing
+        if not me['in_zone'] or obs['alive'] <= 2 or obs['zone']['radius'] < 35 or me['hp'] >= .9*me['max_hp']:
+            self.healing = False
+        elif me['hp'] < .55*me['max_hp'] or (now-self.last_kill < .2 and me['hp'] < .9*me['max_hp']):
+            self.healing = True
+        if self.healing != was_healing or (self.healing and self.goal_kind != 'recover'):
+            self.goal_until = -1.
+            if not self.healing:
+                self.goal = None
+        if not self.healing:
+            self.hidden_now = False
         if self.goal is None or now >= self.goal_until:
             self.select_goal(obs)
         waypoint = self.waypoint(obs)
@@ -595,6 +764,22 @@ class Bot:
         elif self.use_jets and not capturing and not me['grounded'] and now - self.jet_started < 5.5:
             action['boost'] = bool(now - self.jet_started < 1.7 and me['pos'][2] < self.jet_altitude and me['energy'] > 25)
         self.shooting(obs, action)
+        if self.healing:
+            action['fire'] = [False,False]
+            for weapon in me['weapons']:
+                if weapon and weapon['kind']=='gun' and weapon.get('ammo',12)<self.weapon_stats(weapon)['mag'] and not weapon.get('reload',0):
+                    action['reload'] = True
+        guards = self.principal_threats(obs)
+        if guards and (self.healing or (not any(action['fire']) and now-self.last_damage<3)):
+            bearings = [(math.atan2(e['pos'][1]-me['pos'][1],e['pos'][0]-me['pos'][0]),e.get('weight',1.)*(2 if e['id']==self.last_attacker else 1)/(distance(me['pos'],e['pos'])+20)) for e in guards]
+            if now-self.last_damage<3 and self.last_damage_bearing is not None and not any(e['id']==self.last_attacker for e in guards):
+                bearings.append((self.last_damage_bearing,.1))
+            half_arc = math.radians(self.config['mech'].get('front_arc_deg',180))*.5-.03
+            choices = [yaw+offset for yaw,_ in bearings for offset in (0.,half_arc,-half_arc)]
+            yaw = max(choices,key=lambda angle:sum(weight*(1 if abs(angle_delta(angle,bearing))<half_arc else 0)+.05*weight*math.cos(angle_delta(angle,bearing)) for bearing,weight in bearings))
+            action['aim'] = [yaw,0.]
+        elif self.last_damage_bearing is not None and now-self.last_damage<3 and (self.healing or not any(action['fire'])):
+            action['aim'] = [self.last_damage_bearing,0.]
         offer = obs.get('offer')
         if offer:
             priorities = {'nanites': 100, 'armor': 96, 'plating': 94, 'servos': 92, 'reactor': 84, 'jets': 80, 'laser_damage': 78, 'laser_charge': 76, 'gun_damage': 72, 'gun_rate': 70, 'gun_mag': 68, 'capacitor': 66, 'gun_velocity': 64, 'lightning_range': 62, 'lightning_efficiency': 60, 'sensors': 52, 'gyros': 48}

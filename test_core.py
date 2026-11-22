@@ -223,6 +223,86 @@ class Semantics(unittest.TestCase):
         self.assertFalse(partial)
         self.assertAlmostEqual(point[2], 18.4)
 
+    def test_forward_prediction_respects_acceleration(self):
+        bot = Bot(HELLO)
+        bot.arena.ground = lambda *args: 0.
+        me = copy.deepcopy(OBSERVATIONS[0]['self'])
+        me.update(pos=[0.,0.,0.],vel=[0.,0.,0.],grounded=True)
+        samples = bot.motion_samples(me,(1.,0.),11.7)
+        self.assertGreater(samples[1][1],0.)
+        self.assertLess(samples[1][1],.2)
+        self.assertLess(samples[-1][1],11.7*.6)
+
+    def test_swept_projectile_model_prefers_a_reachable_side_step(self):
+        bot = Bot(HELLO)
+        bot.arena.ground = lambda *args: 0.
+        bot.arena.line_clear = lambda *args: True
+        bot.arena.walk_clear = lambda *args: True
+        obs = copy.deepcopy(OBSERVATIONS[0])
+        me = obs['self']
+        me.update(pos=[0.,0.,0.],vel=[0.,0.,0.],grounded=True,in_zone=True,hp=me['max_hp'])
+        p = dict(kind='gun',pos=[100.,0.,4.5],vel=[-252.,0.,0.])
+        obs.update(projectiles=[p],mechs=[])
+        forward = bot.projectile_cost(bot.motion_samples(me,(1.,0.),11.7),[p],2.75,9.)
+        side = bot.projectile_cost(bot.motion_samples(me,(0.,1.),11.7),[p],2.75,9.)
+        self.assertLess(side,forward*.65)
+        move,_,_ = bot.movement(obs,[100.,0.])
+        self.assertGreater(abs(move[1]),.7)
+
+    def test_recovery_selects_cover_stops_lightning_and_resumes_after_healing(self):
+        bot = Bot(HELLO)
+        bot.arena.ground = lambda *args: 0.
+        bot.arena.clear_at = lambda *args, **kwargs: True
+        bot.arena.walk_clear = lambda *args: True
+        bot.arena.line_clear = lambda a,b: not (min(a[0],b[0]) < -5 < max(a[0],b[0]))
+        obs = copy.deepcopy(OBSERVATIONS[0])
+        me = obs['self']
+        me.update(pos=[0.,0.,0.],vel=[0.,0.,0.],aim=[0.,0.],grounded=True,in_zone=True,hp=me['max_hp']*.5,energy=me['max_energy'])
+        me['weapons'][1] = dict(kind='lightning',cooldown=0.,stats=HELLO['config']['weapons']['lightning'])
+        enemy = dict(id=100,kind='mech',pos=[30.,0.,0.],vel=[0.,0.,0.],aim=[math.pi,0.],hp=1400.,cubes=0,weapons=['gun'])
+        obs.update(t=0.,tick=0,mechs=[enemy],cubes=[],crates=[],pickups=[],drops=[],projectiles=[],events=[],sounds=[])
+        obs['zone'].update(center=[0.,0.],next_center=[0.,0.],radius=300.,next_radius=300.)
+        bot.hostile_until[100] = 100.
+        ordinary = {}
+        bot.shooting(obs,ordinary)
+        self.assertTrue(ordinary['fire'][1])
+        action = bot.act(obs)
+        self.assertTrue(bot.healing)
+        self.assertEqual(bot.goal_kind,'recover')
+        self.assertLess(bot.goal[0],-5.)
+        self.assertFalse(any(action['fire']))
+        me['hp'] = me['max_hp']*.8
+        self.assertFalse(any(bot.act(obs)['fire']))
+        me['hp'] = me['max_hp']*.91
+        self.assertTrue(any(bot.act(obs)['fire']))
+        self.assertFalse(bot.healing)
+        me['hp'] = me['max_hp']*.8
+        obs.update(events=[dict(type='kill',target=100)],mechs=[])
+        bot.act(obs)
+        self.assertTrue(bot.healing,'post-kill recovery starts above the low-HP threshold')
+        me['in_zone'] = False
+        obs['events'] = []
+        bot.act(obs)
+        self.assertFalse(bot.healing,'zone evacuation overrides waiting to heal')
+
+    def test_unseen_attacker_bearing_causes_escape_instead_of_waiting(self):
+        bot = Bot(HELLO)
+        bot.arena.ground = lambda *args: 0.
+        bot.arena.clear_at = lambda *args, **kwargs: True
+        bot.arena.walk_clear = lambda *args: True
+        bot.arena.line_clear = lambda *args: True
+        obs = copy.deepcopy(OBSERVATIONS[0])
+        me = obs['self']
+        me.update(pos=[0.,0.,0.],vel=[0.,0.,0.],grounded=True,in_zone=True,hp=me['max_hp']*.5)
+        obs.update(t=0.,tick=0,mechs=[],cubes=[],crates=[],pickups=[],drops=[],projectiles=[],sounds=[],events=[dict(type='damaged',amount=45.,weapon='gun',bearing=0.,by=123)])
+        obs['zone'].update(center=[0.,0.],next_center=[0.,0.],radius=300.,next_radius=300.)
+        action = bot.act(obs)
+        self.assertFalse(bot.hidden_now)
+        self.assertLess(bot.goal[0],-5.)
+        self.assertLess(action['move'][0],-.5)
+        self.assertAlmostEqual(angle_delta(action['aim'][0],0.),0.)
+        self.assertFalse(any(action['fire']))
+
     def test_tall_mech_routes_around_bridge_that_small_mech_can_use(self):
         arena = object.__new__(Arena)
         arena.valid, arena.terrain, arena.ring_rows, arena.nav_cache = True, [], {}, {}
@@ -276,6 +356,8 @@ def workload():
     times = []
     for k in range(200):
         obs['t'], obs['tick'] = k * .1, k * 2
+        if k >= 100:
+            obs['self']['hp'] = obs['self']['max_hp'] * .45
         start = time.perf_counter()
         bot.act(obs)
         times.append((time.perf_counter() - start) * 1000)
