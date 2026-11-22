@@ -184,6 +184,44 @@ class Semantics(unittest.TestCase):
         bot.shooting(obs, after)
         self.assertTrue(after['fire'][0])
 
+    def test_shoots_exposed_body_when_a_wall_covers_the_center(self):
+        bot = Bot(HELLO)
+        arena = object.__new__(Arena)
+        arena.valid, arena.terrain, arena.ring_rows = True, [], {}
+        ring = [39., -10., 41., -10., 41., 10., 39., 10.]
+        edges = [(ring[i - 2], ring[i - 1], ring[i], ring[i + 1]) for i in range(0, len(ring), 2)]
+        arena.buckets = {(1, -1): [0], (1, 0): [0]}
+        bot.arena = arena
+        bot.hostile_until[1] = 10.
+        obs = copy.deepcopy(OBSERVATIONS[0])
+        obs['self']['pos'] = [0., 0., 0.]
+        enemy = dict(id=1, kind='mech', pos=[80., 0., 0.], vel=[0., 0., 0.], aim=[math.pi, 0.], hp=1400., cubes=0, weapons=['gun'])
+        obs['mechs'] = [enemy]
+        for wall_height in (6., 7.):
+            arena.prisms = [(0., wall_height, [ring], edges, (39., 41., -10., 10.))]
+            origin = [0., 0., 7.]
+            self.assertFalse(arena.line_clear(origin, [80., 0., 4.5]))
+            point, partial = bot.visible_aim_point(enemy, origin)
+            self.assertTrue(partial)
+            self.assertIsNotNone(point)
+            self.assertGreater(point[2], 4.5)
+            self.assertLess(point[2], 9.)
+            obs['self']['aim'] = [0., math.atan2(point[2] - 7, 80)]
+            act = {}
+            bot.shooting(obs, act)
+            self.assertTrue(act['fire'][0])
+
+    def test_body_aim_reads_live_height_and_cube_scale(self):
+        hello = copy.deepcopy(HELLO)
+        hello['config']['mech']['height'] = 12.
+        hello['config']['cubes']['size_per_cube'] = .08
+        bot = Bot(hello)
+        bot.arena.line_clear = lambda *args: True
+        actor = dict(id=1, kind='mech', pos=[80., 0., 10.], cubes=5)
+        point, partial = bot.visible_aim_point(actor, [0., 0., 7.])
+        self.assertFalse(partial)
+        self.assertAlmostEqual(point[2], 18.4)
+
 
 def workload():
     bot = Bot(HELLO)

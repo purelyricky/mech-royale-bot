@@ -407,6 +407,26 @@ class Bot:
     def weapon_stats(self, weapon):
         return {**self.config['weapons'][weapon['kind']], **weapon.get('stats', {})}
 
+    def visible_aim_point(self, actor, origin):
+        kind = actor['kind']
+        if kind == 'npc':
+            height = self.config['npc']['height']
+            fractions = (.55, .75, .92, .3)
+        elif kind == 'crate':
+            height = self.config['crates']['height']
+            fractions = (.5, .75, .9)
+        else:
+            scale = 1 + self.config['cubes'].get('size_per_cube', .05) * actor.get('cubes', 0)
+            height = self.config['mech']['height'] * scale
+            fractions = (.5, .7, .9, .3)
+        for i, fraction in enumerate(fractions):
+            if i and time.perf_counter() > self.deadline - .001:
+                break
+            point = [actor['pos'][0], actor['pos'][1], actor['pos'][2] + height * fraction]
+            if self.arena.line_clear(origin, point):
+                return point, i > 0
+        return None, False
+
     def shooting(self, obs, action):
         me = obs['self']
         pos, now, stats = me['pos'], obs['t'], me['stats']
@@ -439,10 +459,10 @@ class Bot:
                 if laser_slot is not None and 'mortar' in (actor.get('weapons') or []):
                     score -= 12  # laser cook-off bonus
                 score += 10 * sum(1 for o in obs['mechs'] if o['kind'] == 'mech' and o['id'] != actor['id'] and distance(o['pos'], actor['pos']) < 35)
-            h = (self.config['npc']['height'] * .55 if actor['kind'] == 'npc' else 4.5 * (1 + .05 * actor.get('cubes', 0)))
-            point = [actor['pos'][0], actor['pos'][1], actor['pos'][2] + h]
-            if d < 280 and self.arena.line_clear(origin, point):
-                candidates.append((score, actor, point))
+            if d < 280:
+                point, partial = self.visible_aim_point(actor, origin)
+                if point is not None:
+                    candidates.append((score + (5 if partial else 0), actor, point))
         if candidates:
             target = min(candidates, key=lambda c: c[0])[1:]
         # Don't aggro distant drones or keep resetting regen for a crate while hurt.
@@ -450,9 +470,10 @@ class Bot:
             crates = sorted(obs['crates'], key=lambda c: distance(pos, c['pos']))
             for crate in crates[:3]:
                 if distance(pos, crate['pos']) < 95 and (self.goal_kind == 'crate' or distance(pos, crate['pos']) < 22):
-                    point = [crate['pos'][0], crate['pos'][1], crate['pos'][2] + self.config['crates']['height'] * .5]
-                    if self.arena.line_clear(origin, point):
-                        target = (dict(crate, kind='crate', vel=[0., 0., 0.]), point)
+                    proxy = dict(crate, kind='crate', vel=[0., 0., 0.])
+                    point, _ = self.visible_aim_point(proxy, origin)
+                    if point is not None:
+                        target = (proxy, point)
                         break
         fire = [False, False]
         if target:
