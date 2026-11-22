@@ -118,6 +118,12 @@ type Projectile struct {
 	Pos  Vec3   `json:"pos"`
 	Vel  Vec3   `json:"vel"`
 }
+type Beam struct {
+	By   int     `json:"by"`
+	Kind string  `json:"kind"`
+	Path []Vec3  `json:"path"`
+	Age  float64 `json:"age"`
+}
 type Event struct {
 	Type    string   `json:"type"`
 	Weapon  string   `json:"weapon"`
@@ -158,6 +164,7 @@ type Observation struct {
 	Self        Self         `json:"self"`
 	Mechs       []Mech       `json:"mechs"`
 	Projectiles []Projectile `json:"projectiles"`
+	Beams       []Beam       `json:"beams"`
 	Crates      []Item       `json:"crates"`
 	Cubes       []Item       `json:"cubes"`
 	Pickups     []Item       `json:"pickups"`

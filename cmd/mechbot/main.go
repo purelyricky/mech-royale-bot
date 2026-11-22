@@ -49,7 +49,7 @@ func run(in io.Reader, out io.Writer) error {
 					return fmt.Errorf("unsupported protocol %q", h.Protocol)
 				}
 				brain = bot.New(h)
-				return enc.Encode(map[string]string{"type": "ready", "name": "last-light-go"})
+				return enc.Encode(map[string]string{"type": "ready", "name": "last-light-go-v2"})
 			case "obs":
 				var o proto.Observation
 				if err := json.Unmarshal(p, &o); err == nil {
@@ -81,13 +81,22 @@ func run(in io.Reader, out io.Writer) error {
 			return nil
 		}
 		if latest != nil && brain != nil {
-			a := brain.Act(*latest)
+			a := decide(brain, *latest)
 			if err := enc.Encode(a); err != nil {
 				return err
 			}
 		}
 	}
 	return nil
+}
+func decide(brain *bot.Bot, o proto.Observation) (a proto.Action) {
+	a = proto.Action{Tick: o.Tick, Aim: o.Self.Aim}
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Fprintln(os.Stderr, "decision recovered:", r)
+		}
+	}()
+	return brain.Act(o)
 }
 func main() {
 	runtime.GOMAXPROCS(1)

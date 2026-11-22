@@ -8,13 +8,16 @@ import (
 const aimLatency = 0.075
 
 func lead(muzzle, tp, tv proto.Vec3, speed float64, grounded bool) (proto.Vec2, proto.Vec3) {
+	return leadAt(muzzle, tp, tv, speed, grounded, aimLatency)
+}
+func leadAt(muzzle, tp, tv proto.Vec3, speed float64, grounded bool, latency float64) (proto.Vec2, proto.Vec3) {
 	if speed <= 0 {
 		speed = 252
 	}
 	t := 0.0
 	var q proto.Vec3
 	for i := 0; i < 4; i++ {
-		tt := aimLatency + t
+		tt := latency + t
 		q = proto.Vec3{tp[0] + tv[0]*tt, tp[1] + tv[1]*tt, tp[2]}
 		if !grounded {
 			q[2] += tv[2] * tt * 0.5
@@ -31,8 +34,9 @@ func (b *Bot) fire(o proto.Observation, a *proto.Action, target, foe, farm *trac
 	me := o.Self
 	_, gun := me.Weapon("gun")
 	muzzle := me.Pos
-	muzzle[0] += me.Vel[0] * aimLatency
-	muzzle[1] += me.Vel[1] * aimLatency
+	launchDelay := 0.5 / math.Max(1, b.Hello.Group("match").Get("tick_hz", 20))
+	muzzle[0] += me.Vel[0] * launchDelay
+	muzzle[1] += me.Vel[1] * launchDelay
 	muzzle[2] += me.Stats.Get("muzzle_height", b.Mech.Get("muzzle_height", 7)*b.scale(me.Cubes))
 	defend := false
 	if target == nil && b.Now-b.NPCHurt < 3 {
@@ -83,14 +87,28 @@ func (b *Bot) fire(o proto.Observation, a *proto.Action, target, foe, farm *trac
 		dist := me.Pos.XY().Distance(tp.XY())
 		tickS := 1 / math.Max(1, b.Hello.Group("match").Get("tick_hz", 20))
 		hyPoint := tp
-		hyPoint[0] += tv[0] * (aimLatency + tickS)
-		hyPoint[1] += tv[1] * (aimLatency + tickS)
+		hyPoint[0] += tv[0] * launchDelay
+		hyPoint[1] += tv[1] * launchDelay
 		hitAim := bearing(muzzle, hyPoint)
 		gunAim := hitAim
 		gunOK := false
 		if gun != nil {
 			var q proto.Vec3
-			gunAim, q = lead(muzzle, tp, tv, gun.Stats.Get("speed", 252), math.Abs(tv[2]) < 0.5)
+			gunVelocity := tv
+			if target != nil && dist > 55 {
+				// Abrupt opposing velocities are a strafe reversal, not a straight
+				// trajectory. Reduce the horizon until the new heading persists.
+				oldSpeed := math.Hypot(target.PreviousVel[0], target.PreviousVel[1])
+				newSpeed := math.Hypot(tv[0], tv[1])
+				trust := 0.65
+				if oldSpeed > 1 && newSpeed > 1 {
+					agreement := (target.PreviousVel[0]*tv[0] + target.PreviousVel[1]*tv[1]) / (oldSpeed * newSpeed)
+					trust = clamp(0.55+0.35*agreement, 0.2, 0.9)
+				}
+				gunVelocity[0] *= trust
+				gunVelocity[1] *= trust
+			}
+			gunAim, q = leadAt(muzzle, tp, gunVelocity, gun.Stats.Get("speed", 252), math.Abs(tv[2]) < 0.5, launchDelay+clamp(gun.Cooldown, 0, tickS))
 			gunOK = dist <= gun.Stats.Get("range", 230)*0.96 && b.World.Clear(muzzle, q)
 		}
 		a.Aim = hitAim
@@ -100,10 +118,11 @@ func (b *Bot) fire(o proto.Observation, a *proto.Action, target, foe, farm *trac
 		haveAim = true
 		tolY := math.Atan2(tr*0.75, math.Max(1, dist))
 		tolP := math.Atan2(th*0.4, math.Max(1, dist))
+		gunTolY := math.Atan2(tr*1.25, math.Max(1, dist))
 		turn := me.Stats.Get("turn_rate", b.Mech.Get("turn_rate", 4)) * tickS
 		pitch := me.Stats.Get("pitch_rate", b.Mech.Get("pitch_rate", 3)) * tickS
 		slew := func(aim proto.Vec2) bool {
-			return math.Max(0, math.Abs(angle(aim[0], me.Aim[0]))-turn) < tolY && math.Max(0, math.Abs(aim[1]-me.Aim[1])-pitch) < tolP
+			return math.Max(0, math.Abs(angle(aim[0], me.Aim[0]))-turn) < gunTolY && math.Max(0, math.Abs(aim[1]-me.Aim[1])-pitch) < tolP
 		}
 		for i, w := range me.Weapons {
 			if i >= 2 {
@@ -144,7 +163,7 @@ func (b *Bot) fire(o proto.Observation, a *proto.Action, target, foe, farm *trac
 					a.Fire[i] = false
 				} else if charge < full-0.051 {
 					a.Fire[i] = true
-					if charge > full*0.45 {
+					if charge > math.Max(0, full-0.2) || gun == nil || gun.Ammo <= 0 || gun.Reload > 0 {
 						a.Aim = hitAim
 					}
 				} else {
@@ -156,7 +175,7 @@ func (b *Bot) fire(o proto.Observation, a *proto.Action, target, foe, farm *trac
 		// Both weapons share the same physical torso. A hitscan takeover must
 		// not also fire a gun along a direction that no longer leads the target.
 		if gi, _ := me.Weapon("gun"); gi >= 0 && gi < 2 && a.Fire[gi] {
-			if math.Abs(angle(a.Aim[0], gunAim[0])) > tolY || math.Abs(a.Aim[1]-gunAim[1]) > tolP {
+			if math.Abs(angle(a.Aim[0], gunAim[0])) > gunTolY || math.Abs(a.Aim[1]-gunAim[1]) > tolP {
 				a.Fire[gi] = false
 			}
 		}

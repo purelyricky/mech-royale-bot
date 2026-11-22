@@ -16,6 +16,8 @@ type track struct {
 	proto.Mech
 	Seen, Hit, Dist, Closing float64
 	LOS, Engage              bool
+	PreviousVel              proto.Vec3
+	LaserAt                  float64
 }
 type known struct {
 	proto.Item
@@ -56,6 +58,8 @@ type Bot struct {
 	EscapeLaunch, EscapeLand                                       proto.Vec2
 	EscapeAt                                                       float64
 	EscapeOK, EscapeFlying                                         bool
+	LastEnemyLOS                                                   float64
+	ForeignBeams                                                   int
 }
 
 func New(h proto.Hello) *Bot {
@@ -137,9 +141,10 @@ func (b *Bot) observe(o proto.Observation) {
 		}
 		t := tab[m.ID]
 		if t == nil {
-			t = &track{Hit: -100}
+			t = &track{Hit: -100, LaserAt: -100}
 			tab[m.ID] = t
 		}
+		t.PreviousVel = t.Vel
 		t.Mech = m
 		if t.MaxHP <= 0 {
 			t.MaxHP = 1400
@@ -154,6 +159,9 @@ func (b *Bot) observe(o proto.Observation) {
 			top := m.Pos
 			top[2] += b.Mech.Get("height", 9) * b.scale(m.Cubes) * 0.85
 			t.LOS = b.World.Clear(origin, top)
+		}
+		if t.LOS && m.Kind != "npc" {
+			b.LastEnemyLOS = o.T
 		}
 		if t.Dist > 1 {
 			t.Closing = -((m.Vel[0]-me.Vel[0])*(m.Pos[0]-p[0]) + (m.Vel[1]-me.Vel[1])*(m.Pos[1]-p[1])) / t.Dist
@@ -188,6 +196,7 @@ func (b *Bot) observe(o proto.Observation) {
 	upd(b.Crates, o.Crates)
 	upd(b.Cubes, o.Cubes)
 	upd(b.Pickups, o.Pickups)
+	b.observeBeams(o)
 	for _, e := range o.Events {
 		switch e.Type {
 		case "damaged":
@@ -224,8 +233,10 @@ func (b *Bot) observe(o proto.Observation) {
 		b.FFA = true
 	}
 	b.P = policy{Ghost: true, Peek: true, LaserRange: 85, LootRadius: 90, FarmHP: 0.70, HPWeight: 60.0 / 1400}
-	if o.T > 20 && !b.FFA {
-		b.P = policy{Hunt: true, LaserRange: 120, LootRadius: 150, LaserSeek: 240, FarmHP: 0.5, HPWeight: 0.18, Stick: 200, LowBonus: 200, FightLoot: 70, Finish: 20}
+	_, armedLaser := me.Weapon("laser")
+	_, armedLight := me.Weapon("lightning")
+	if (o.T > 16 || o.T > 8 && (armedLaser != nil || armedLight != nil)) && !b.FFA {
+		b.P = policy{Hunt: true, LaserRange: 145, LootRadius: 185, LaserSeek: 250, FarmHP: 0.5, HPWeight: 0.18, Stick: 200, LowBonus: 200, FightLoot: 48, Finish: 28}
 	}
 	if b.FFA {
 		b.P.LaserSeek = 180
@@ -360,6 +371,21 @@ func (b *Bot) preferred(me proto.Self, t *track) float64 {
 			r = math.Max(r, 80)
 		}
 	}
+	if laser != nil {
+		// Range is a loadout decision: exploit a laser's reach against gun or
+		// lightning opponents, but keep our gun useful in a laser mirror.
+		if t.Has("laser") {
+			r = 100
+		} else {
+			r = math.Min(laser.Stats.Get("range", 280)*0.68, 155)
+		}
+		if t.Has("lightning") {
+			r = math.Max(r, b.Light.Get("range", 45)+35)
+		}
+		if b.FFA {
+			r = math.Max(r, 125)
+		}
+	}
 	return r
 }
 func (b *Bot) fight(o proto.Observation, t *track, seen []*track, wantLOS float64, finish bool) proto.Vec2 {
@@ -414,11 +440,22 @@ func (b *Bot) fight(o proto.Observation, t *track, seen []*track, wantLOS float6
 		for _, e := range seen {
 			if e.ID != t.ID && q.Distance(e.Pos.XY()) < 170 && b.World.Clear(b.eye(e), at(q, z+h*0.6)) {
 				s -= 30
+				facing := math.Atan2(t.Pos[1]-q[1], t.Pos[0]-q[0])
+				other := math.Atan2(e.Pos[1]-q[1], e.Pos[0]-q[0])
+				if math.Abs(angle(other, facing)) > math.Pi/2 {
+					s -= 22
+				}
 			}
 			if light == nil && e.Has("lightning") {
 				dd := q.Distance(e.Pos.XY())
 				if dd < b.Light.Get("range", 45)+16 {
 					s -= (b.Light.Get("range", 45) + 16 - dd) * 4.2
+				}
+			}
+			if e.Charging && e.Seen == b.Now {
+				toQ := math.Atan2(q[1]-e.Pos[1], q[0]-e.Pos[0])
+				if math.Abs(angle(e.Aim[0], toQ)) < 0.11 && b.World.Clear(b.eye(e), at(q, z+h*0.6)) {
+					s -= 85
 				}
 			}
 		}
@@ -549,7 +586,15 @@ func (b *Bot) chooseLoot(o proto.Observation, hpf float64, danger bool) *known {
 	}
 	for _, k := range b.items(b.Cubes) {
 		if p.Distance(k.Pos.XY()) < math.Max(60, b.P.LootRadius*0.7) {
-			consider(k, "cube", cubeV)
+			value := cubeV
+			neighbors := 0
+			for _, cb := range b.Cubes {
+				if cb.ID != k.ID && cb.Pos.XY().Distance(k.Pos.XY()) < 8 && math.Abs(cb.Pos[2]-k.Pos[2]) < 3.6 {
+					neighbors++
+				}
+			}
+			value *= 1 + math.Min(2, float64(neighbors)*0.45)
+			consider(k, "cube", value)
 		}
 	}
 	if hpf > b.P.FarmHP && !danger && (b.P.Hunt || b.Now < 150) {
@@ -563,6 +608,17 @@ func (b *Bot) chooseLoot(o proto.Observation, hpf float64, danger bool) *known {
 				if b.Now-n.Seen < 12 && n.Dist < b.P.LootRadius {
 					consider(&known{proto.Item{ID: n.ID, Pos: n.Pos, HP: n.HP}, n.Seen}, "npc", 85)
 				}
+			}
+		}
+	}
+	if !danger && (hpf < 0.9 || me.Cubes < 8) {
+		for _, dr := range o.Drops {
+			d := p.Distance(dr.Pos.XY())
+			if dr.Holder != nil && *dr.Holder != me.ID {
+				continue
+			}
+			if d < 130 && dr.LandsIn < 7 && d*1.4/math.Max(1, speed)+dr.LandsIn+dr.CaptureS < 24 {
+				consider(&known{proto.Item{ID: dr.ID, Pos: dr.Pos}, b.Now}, "drop", 320)
 			}
 		}
 	}
@@ -683,7 +739,7 @@ func (b *Bot) Act(o proto.Observation) proto.Action {
 				t.Engage = hpf > 0.75 && t.HP < 0.55*t.MaxHP && off > 0.6 && t.Dist < 165 || hpf > 0.85 && off > 1.75 && t.Dist < 120 || t.LOS && hpf > 0.5 && t.Dist < 160 && b.odds(me, t, true) >= 0.68
 			}
 		} else {
-			t.Engage = t.Dist < 60 || b.Now-t.Hit < 6 || late || t.Closing > 3 && t.Dist < 180 || t.HP < 0.4*t.MaxHP && t.Dist < 160 || aimed && t.Dist < 190
+			t.Engage = t.Dist < 60 || b.Now-t.Hit < 6 || late || t.Closing > 3 && t.Dist < 180 || t.HP < 0.4*t.MaxHP && t.Dist < 160 || aimed && t.Dist < 190 || b.P.Hunt && hpf > 0.5 && t.Dist < 170
 		}
 		if t.Engage || b.Now-t.Hit < 4 {
 			danger = true
@@ -698,6 +754,15 @@ func (b *Bot) Act(o proto.Observation) proto.Action {
 			continue
 		}
 		s := t.Dist + b.P.HPWeight*t.HP
+		if t.Has("mortar") && laser != nil {
+			s -= 45
+		}
+		if math.Abs(off) > b.Mech.Get("front_arc_deg", 180)*math.Pi/360+0.1 {
+			s -= 22
+		}
+		if b.P.Hunt && b.Now-t.LaserAt >= 0 && b.Now-t.LaserAt < b.Hello.Weapon("laser").Get("cooldown", 1.65) {
+			s -= 32
+		}
 		if t.HP < 0.3*t.MaxHP {
 			s -= b.P.LowBonus
 		}
@@ -720,6 +785,14 @@ func (b *Bot) Act(o proto.Observation) proto.Action {
 	foe := target
 	if foe == nil && b.P.Peek {
 		foe = hidden
+	}
+	if foe == nil && b.P.Hunt && hpf > 0.6 {
+		for _, t := range b.ordered(b.Tracks) {
+			d := p.Distance(t.Pos.XY())
+			if b.Now-t.Seen < 4 && d < 190 && (foe == nil || d < foe.Dist) {
+				foe = t
+			}
+		}
 	}
 	if danger || b.Now-b.LastHurt < 3 {
 		b.LastThreat = b.Now
@@ -832,6 +905,14 @@ func (b *Bot) Act(o proto.Observation) proto.Action {
 				}
 			}
 		}
+		if b.P.Hunt && !hot {
+			for _, e := range seen {
+				if e.Charging && e.LOS && math.Abs(angle(e.Aim[0], math.Atan2(p[1]-e.Pos[1], p[0]-e.Pos[0]))) < 0.2 {
+					want = -1.4
+					break
+				}
+			}
+		}
 		finish := b.P.Finish > 0 && foe.HP < 0.38*foe.MaxHP && hpf > 0.42 && crowd <= 2
 		a.Move = b.fight(o, foe, seen, want, finish)
 		if light != nil && foe.Dist > 50 && me.Energy > 55 && want > 0 {
@@ -875,6 +956,9 @@ func (b *Bot) Act(o proto.Observation) proto.Action {
 		if loot != nil {
 			mode = "loot"
 			a.Move = b.travel(me, loot.Pos.XY())
+			if loot.Kind == "pickup" && b.P.Hunt && !danger && me.Energy > 55 && p.Distance(loot.Pos.XY()) > 12 {
+				a.Boost = true
+			}
 			if loot.Kind == "npc" {
 				n := b.NPCs[loot.ID]
 				if n != nil && b.Now-n.Seen < 1 && n.LOS && n.Dist < 75 {
@@ -946,6 +1030,9 @@ func (b *Bot) Act(o proto.Observation) proto.Action {
 		if float64(gun.Ammo) <= gun.Stats.Get("mag", 12)*0.6 || b.Now-b.LastThreat > 3 {
 			a.Reload = true
 		}
+	}
+	if gun != nil && gun.Reload <= 0 && farm == nil && farmPos == nil && float64(gun.Ammo) <= gun.Stats.Get("mag", 12)*0.6 && b.Now-b.LastEnemyLOS > 1.2 {
+		a.Reload = true
 	}
 	b.pickup(o, &a)
 	a.Boost = a.Boost && math.Hypot(a.Move[0], a.Move[1]) > 0.01
@@ -1046,9 +1133,9 @@ func (b *Bot) dodge(o proto.Observation) (proto.Vec2, bool, bool) {
 	return unit(out), laserThreat, math.Hypot(out[0], out[1]) > 0.01
 }
 func (b *Bot) upgrade(o proto.Observation) int {
-	order := []string{"plating", "armor", "gun_damage", "nanites", "gun_rate", "lightning_efficiency", "lightning_range", "laser_damage", "servos", "laser_charge", "gun_mag", "gun_velocity", "gyros", "lightning_chain", "reactor", "capacitor", "mortar_reload", "mortar_splash", "mortar_velocity", "sensors", "jets", "laser_pierce"}
+	order := []string{"plating", "armor", "nanites", "gun_damage", "gun_mag", "gun_rate", "lightning_efficiency", "lightning_range", "laser_damage", "servos", "laser_charge", "gun_velocity", "gyros", "lightning_chain", "reactor", "capacitor", "mortar_reload", "mortar_splash", "mortar_velocity", "sensors", "jets", "laser_pierce"}
 	if b.P.Hunt {
-		order = []string{"plating", "armor", "laser_damage", "laser_charge", "nanites", "gun_damage", "gun_rate", "lightning_efficiency", "lightning_range", "servos", "gun_mag", "gun_velocity", "gyros", "lightning_chain", "reactor", "capacitor", "mortar_reload", "mortar_splash", "mortar_velocity", "sensors", "jets", "laser_pierce"}
+		order = []string{"plating", "armor", "nanites", "laser_damage", "laser_charge", "gun_damage", "gun_mag", "gun_rate", "lightning_efficiency", "lightning_range", "servos", "gun_velocity", "gyros", "lightning_chain", "reactor", "capacitor", "mortar_reload", "mortar_splash", "mortar_velocity", "sensors", "jets", "laser_pierce"}
 	}
 	best, rank := 0, len(order)+1
 	for i, c := range o.Offer.Choices {
