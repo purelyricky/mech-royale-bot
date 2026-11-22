@@ -75,6 +75,9 @@ class Bot:
         self.aim_streak = {}
         self.last_obs_t = -.1
         self.visited = {}
+        self.jet_started = -100.
+        self.jet_altitude = 0.
+        self.jet_cooldown = 0.
         self.orbit = self.rng.choice((-1, 1))
         self.scan_phase = self.rng.uniform(-math.pi, math.pi)
         self.deadline = math.inf
@@ -502,6 +505,17 @@ class Bot:
         waypoint = self.waypoint(obs)
         move, boost, jump = self.movement(obs, waypoint)
         action = {'tick': obs['tick'], 'move': move, 'boost': boost, 'jump': jump}
+        hostile = any(e['kind'] == 'mech' and self.hostile_until.get(e['id'], -1) > now and distance(e['pos'], me['pos']) < 160 for e in self.threats)
+        stats = me['stats']
+        if me['grounded'] and hostile and now >= self.jet_cooldown and me['energy'] > me['max_energy'] * .65:
+            eye = [me['pos'][0], me['pos'][1], me['pos'][2] + stats.get('height', 9) + .5]
+            overhead = [eye[0], eye[1], eye[2] + 18]
+            if self.arena.line_clear(eye, overhead):
+                self.jet_started, self.jet_cooldown = now, now + 5.5
+                self.jet_altitude = me['pos'][2] + 14.
+                action.update(jump=True, boost=True)
+        elif not me['grounded'] and now - self.jet_started < 5.5:
+            action['boost'] = bool(now - self.jet_started < 1.7 and me['pos'][2] < self.jet_altitude and me['energy'] > 25)
         self.shooting(obs, action)
         offer = obs.get('offer')
         if offer:

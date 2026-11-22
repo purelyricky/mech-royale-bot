@@ -184,12 +184,14 @@ class Arena:
         # Visit buckets along the ray rather than the whole diagonal bounding rectangle.
         i, j = math.floor(a[0] / self.bucket), math.floor(a[1] / self.bucket)
         end_i, end_j = math.floor(b[0] / self.bucket), math.floor(b[1] / self.bucket)
+        candidates.update(self.buckets.get((end_i, end_j), ()))
         sx, sy = (1 if dx >= 0 else -1), (1 if dy >= 0 else -1)
         tx = (((i + (sx > 0)) * self.bucket - a[0]) / dx) if abs(dx) > 1e-12 else math.inf
         ty = (((j + (sy > 0)) * self.bucket - a[1]) / dy) if abs(dy) > 1e-12 else math.inf
         dtx = self.bucket / abs(dx) if abs(dx) > 1e-12 else math.inf
         dty = self.bucket / abs(dy) if abs(dy) > 1e-12 else math.inf
-        while True:
+        # Bound traversal even when a sub-picometer boundary crossing rounds a delta to zero.
+        for _ in range(abs(end_i - i) + abs(end_j - j) + 4):
             candidates.update(self.buckets.get((i, j), ()))
             if i == end_i and j == end_j:
                 break

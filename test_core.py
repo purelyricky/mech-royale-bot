@@ -62,6 +62,7 @@ class Semantics(unittest.TestCase):
         self.assertTrue(a.line_clear([7, 7, 15], [13, 13, 15]), 'courtyard hole')
         self.assertTrue(a.line_clear([-10, 10, 25], [30, 10, 25]), 'above roof')
         self.assertFalse(a.line_clear([2, 2, 5], [2, 2, 25]), 'vertical through slab')
+        self.assertTrue(a.line_clear([32 - 1e-13, 10, 25], [32 + 1e-13, 10, 25]), 'tiny bucket crossing terminates')
 
     def test_gun_does_not_fire_before_aim_slews(self):
         obs = copy.deepcopy(OBSERVATIONS[0])
