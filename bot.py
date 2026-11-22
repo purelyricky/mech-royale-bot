@@ -82,6 +82,9 @@ class Bot:
         self.orbit = self.rng.choice((-1, 1))
         self.scan_phase = self.rng.uniform(-math.pi, math.pi)
         self.deadline = math.inf
+        self.healing = False
+        self.hidden_now = False
+        self.recover_sprint = False
 
     def remember(self, obs):
         now = obs['t']
@@ -311,6 +314,61 @@ class Bot:
                 break
         return self.route[0] if self.route else self.goal
 
+    def motion_samples(self, me, command, speed):
+        x,y,z = me['pos']
+        vx,vy,vz = me['vel']
+        accel = me['stats'].get('ground_accel',58.5) if me['grounded'] else me['stats'].get('air_accel',12.)
+        target_x,target_y = command[0]*speed,command[1]*speed
+        follows_ground = me['grounded'] and abs(z-self.arena.ground(*me['pos'][:2])) < 3
+        samples = [(0.,x,y,z)]
+        for k in range(1,13):
+            dx,dy = target_x-vx,target_y-vy
+            delta = math.hypot(dx,dy)
+            factor = min(1.,accel*.05/max(.0001,delta))
+            vx,vy = vx+dx*factor,vy+dy*factor
+            x,y = x+vx*.05,y+vy*.05
+            t = k*.05
+            feet = self.arena.ground(x,y) if follows_ground else z+vz*t-.5*me['stats'].get('gravity',22.)*t*t if not me['grounded'] else z
+            if not me['grounded']:
+                feet = max(feet,self.arena.ground(x,y))
+            samples.append((t,x,y,feet))
+        return samples
+
+
+    def projectile_cost(self, samples, projectiles, radius, height):
+        total = 0.
+        for p in projectiles:
+            mortar = p['kind'] == 'mortar'
+            rr = radius + (7. if mortar else self.config.get('projectile',{}).get('gun_radius',.3))
+            previous = None
+            worst = 0.
+            for t,x,y,z in samples:
+                projectile = [p['pos'][j]+p['vel'][j]*t for j in range(3)]
+                if mortar:
+                    projectile[2] -= .5*self.config['weapons']['mortar'].get('gravity',22.)*t*t
+                relative = (projectile[0]-x,projectile[1]-y,projectile[2]-z)
+                if previous is not None:
+                    old_t,old_rel,old_z = previous
+                    dx,dy = relative[0]-old_rel[0],relative[1]-old_rel[1]
+                    f = max(0.,min(1.,-(old_rel[0]*dx+old_rel[1]*dy)/max(.0001,dx*dx+dy*dy)))
+                    rx,ry = old_rel[0]+dx*f,old_rel[1]+dy*f
+                    rz = old_rel[2]+(relative[2]-old_rel[2])*f
+                    miss = math.hypot(rx,ry)
+                    if (-7 if mortar else -.3) <= rz <= height+(7 if mortar else .3) and miss < rr+1.2:
+                        hit_t = old_t+(t-old_t)*f
+                        if not mortar:
+                            hit_point = [p['pos'][j]+p['vel'][j]*hit_t for j in range(3)]
+                            if not self.arena.line_clear(p['pos'],hit_point):
+                                break
+                        worst = max(worst,min(1.,max(0.,(rr+1.2-miss)/1.2))**2)
+                        if worst >= .999:
+                            break
+                previous = t,relative,z
+            damage = 360 if mortar else self.config['npc'].get('damage',25) if p['kind'] == 'npc' else self.config['weapons']['gun']['damage']
+            total += worst*damage*.15
+        return total
+
+
     def movement(self, obs, waypoint):
         me, now = obs['self'], obs['t']
         x, y, z = me['pos']
@@ -318,22 +376,51 @@ class Bot:
         speed = stats.get('walk_speed', 11.7)
         radius = stats.get('radius', 2.5) + .25
         height = stats.get('height', 9.)
+        close = [e for e in self.threats if distance(e['pos'], (x, y)) < 130]
+        nearest = distance(me['pos'],close[0]['pos']) if close else 1e6
+        incoming = []
+        imminent = False
+        for p in obs['projectiles'][:24]:
+            rx,ry = p['pos'][0]-x,p['pos'][1]-y
+            vx,vy = p['vel'][0]-me['vel'][0],p['vel'][1]-me['vel'][1]
+            t = max(0.,min(.6,-(rx*vx+ry*vy)/max(1.,vx*vx+vy*vy)))
+            miss = math.hypot(rx+vx*t,ry+vy*t)
+            if miss < radius+14+(7 if p['kind']=='mortar' else 0):
+                incoming.append((t,p))
+                imminent |= t < .35 and miss < radius+1.5
+        incoming.sort(key=lambda q:q[0])
+        projectiles = [p for _,p in incoming[:12]]
+        energy = me['energy']
+        planned_boost = bool(me['grounded'] and energy>30 and (not me['in_zone'] or (nearest<85 and me['hp']<.8*me['max_hp'])))
+        if self.healing and not self.hidden_now and me['grounded']:
+            threshold = .30 if self.recover_sprint else .65
+            self.recover_sprint = energy > me['max_energy']*threshold
+            planned_boost = self.recover_sprint
+        else:
+            self.recover_sprint = False
+        if imminent and me['grounded'] and energy > me['max_energy']*.6:
+            planned_boost = True
+        if self.hidden_now and self.healing:
+            planned_boost = False
+        if planned_boost:
+            speed = stats.get('boost_speed',19.5)
+        if any(w and w.get('charge',0)>0 for w in me['weapons']):
+            speed *= stats.get('charge_move_mult',.5)
         wanted = unit(waypoint[0] - x, waypoint[1] - y)
         current_dist = distance((x, y), waypoint)
         arrival_speed = min(1., current_dist / max(1., speed * .85))
-        directions = [(wanted[0] * arrival_speed, wanted[1] * arrival_speed), self.previous_move, (0., 0.)]
-        directions += [(math.cos(k * math.tau / 24), math.sin(k * math.tau / 24)) for offset in range(3) for k in range(offset, 24, 3)]
-        close = [e for e in self.threats if distance(e['pos'], (x, y)) < 130]
+        directions = [(wanted[0] * arrival_speed, wanted[1] * arrival_speed), (0., 0.)]
+        directions += [(math.cos(k*math.tau/32),math.sin(k*math.tau/32)) for offset in range(8) for k in range(offset,32,8)]
         ranked = []
         for ux, uy in directions:
             if len(ranked) >= 7 and time.perf_counter() > self.deadline - .005:
                 break
-            horizon = .85
-            px = x + ux * speed * horizon + me['vel'][0] * .08
-            py = y + uy * speed * horizon + me['vel'][1] * .08
-            if not self.arena.walk_clear(me['pos'], (px, py), radius, height):
+            samples = self.motion_samples(me,(ux,uy),speed)
+            _,px,py,pz = samples[-1]
+            middle = samples[6][1:]
+            if not self.arena.walk_clear(me['pos'],middle,radius,height) or not self.arena.walk_clear(middle,(px,py,pz),radius,height):
                 continue
-            score = (distance((px, py), waypoint) - current_dist) * .14
+            score = (distance((px, py), waypoint) - current_dist) * (.07 if self.healing else .14)
             cx, cy, safe_radius = future_circle(obs['zone'], now, now + 1.8)
             # A route around a wall can initially lead away from the circle. A quadratic
             # local zone cost would pin us against the wall while the zone kills us.
@@ -350,37 +437,25 @@ class Bot:
                 if ux == 0 and uy == 0:
                     score += 1.2
             score += .1 * ((ux - self.previous_move[0]) ** 2 + (uy - self.previous_move[1]) ** 2)
-            # Dodge visible projectiles at their closest approach over the next half second.
-            for p in obs['projectiles'][:24]:
-                rx, ry = p['pos'][0] - x, p['pos'][1] - y
-                vx, vy = p['vel'][0] - ux * speed, p['vel'][1] - uy * speed
-                vv = vx * vx + vy * vy
-                t = max(0., min(.55, -(rx * vx + ry * vy) / max(1., vv)))
-                dx, dy = rx + vx * t, ry + vy * t
-                pz = p['pos'][2] + p['vel'][2] * t
-                if p['kind'] == 'mortar':
-                    pz -= .5 * self.config['weapons']['mortar'].get('gravity', 22) * t * t
-                if z - 1 <= pz <= z + height + 2 and t > .015:
-                    rr = radius + (7 if p['kind'] == 'mortar' else 1.2)
-                    score += max(0., rr * rr - dx * dx - dy * dy) * .18
-            ranked.append((score, ux, uy, px, py))
+            score += self.projectile_cost(samples,projectiles,radius,height)
+            ranked.append((score, ux, uy, px, py,pz))
         ranked.sort()
         best = None
-        for score, ux, uy, px, py in ranked[:5]:
+        for score, ux, uy, px, py,pz in ranked[:5]:
             if best is not None and time.perf_counter() > self.deadline - .005:
                 break
             if close:
-                score += (self.risk((px, py), now, cover=True, z=z) - self.risk((px, py), now)) * 1.5
+                score += (self.risk((px, py), now, cover=True, z=pz) - self.risk((px, py), now)) * (3 if self.healing else 1.5)
             if best is None or score < best[0]:
                 best = score, ux, uy
         move = best[1:] if best else wanted
         if current_dist < 3 and self.goal_kind in ('zone', 'drop') and not close:
             move = (0., 0.)
+        if self.healing and self.hidden_now and current_dist<3 and not projectiles:
+            move = (0.,0.)
         energy = me['energy']
         nearest = distance(me['pos'], close[0]['pos']) if close else 1e6
-        boost = me['grounded'] and energy > 30 and (not me['in_zone'] or (nearest < 85 and me['hp'] < .8 * me['max_hp']))
-        if me['in_zone'] and energy < me['max_energy'] * .38:
-            boost = False
+        boost = planned_boost
         # Stuck recovery is deliberate, not an unconditional jump every few seconds.
         self.last_positions.append((now, x, y))
         self.last_positions = [p for p in self.last_positions if now - p[0] < 1.4]
@@ -390,6 +465,7 @@ class Bot:
             boost = bool(stuck and energy > 25 and me['vel'][2] < 4)
         self.previous_move = move
         return list(move), bool(boost), jump
+
 
     def weapon_stats(self, weapon):
         return {**self.config['weapons'][weapon['kind']], **weapon.get('stats', {})}

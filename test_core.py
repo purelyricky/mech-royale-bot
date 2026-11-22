@@ -147,6 +147,35 @@ class Semantics(unittest.TestCase):
         self.assertFalse(act['boost'])
 
 
+    def test_forward_prediction_respects_acceleration(self):
+        bot = Bot(HELLO)
+        bot.arena.ground = lambda *args: 0.
+        me = copy.deepcopy(OBSERVATIONS[0]['self'])
+        me.update(pos=[0.,0.,0.],vel=[0.,0.,0.],grounded=True)
+        samples = bot.motion_samples(me,(1.,0.),11.7)
+        self.assertGreater(samples[1][1],0.)
+        self.assertLess(samples[1][1],.2)
+        self.assertLess(samples[-1][1],11.7*.6)
+
+
+    def test_swept_projectile_model_prefers_a_reachable_side_step(self):
+        bot = Bot(HELLO)
+        bot.arena.ground = lambda *args: 0.
+        bot.arena.line_clear = lambda *args: True
+        bot.arena.walk_clear = lambda *args: True
+        obs = copy.deepcopy(OBSERVATIONS[0])
+        me = obs['self']
+        me.update(pos=[0.,0.,0.],vel=[0.,0.,0.],grounded=True,in_zone=True,hp=me['max_hp'])
+        p = dict(kind='gun',pos=[100.,0.,4.5],vel=[-252.,0.,0.])
+        obs.update(projectiles=[p],mechs=[])
+        forward = bot.projectile_cost(bot.motion_samples(me,(1.,0.),11.7),[p],2.75,9.)
+        side = bot.projectile_cost(bot.motion_samples(me,(0.,1.),11.7),[p],2.75,9.)
+        self.assertLess(side,forward*.65)
+        move,_,_ = bot.movement(obs,[100.,0.])
+        self.assertGreater(abs(move[1]),.7)
+
+
+
 def workload():
     bot = Bot(HELLO)
     obs = copy.deepcopy(OBSERVATIONS[0])
